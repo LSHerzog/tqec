@@ -6,8 +6,12 @@ from pyzx.graph.graph_s import GraphS
 from pyzx.utils import EdgeType, FractionLike, VertexType, vertex_is_zx
 
 from tqec.computation.cube import CubeKind, Port, ZXCube
+from tqec.computation.prism import PrismKind, ZXPrism
 from tqec.utils.enums import Basis, Pauli
 from tqec.utils.exceptions import TQECError
+from tqec.computation.pipe_prism import PrismPipe
+from tqec.computation.prism import BasisPrism
+
 
 
 def is_zx_no_phase(g: GraphS, v: int) -> bool:
@@ -39,6 +43,59 @@ def is_hadamard(g: GraphS, edge: tuple[int, int]) -> bool:
     """Check if an edge in a PyZX graph is a Hadamard edge."""
     return g.edge_type(edge) is EdgeType.HADAMARD
 
+def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[VertexType, FractionLike]:
+    """Convert a Prism to corresponding PyZX vertex type and phase.
+
+    Since prisms have no ZX type by themselfes, one needs the corresponding neighboring pipes
+    because the pipe colors determine the zx type of the node
+    """
+    print("type kind", kind)
+    if isinstance(kind, ZXPrism):
+        for pipe in neighbor_pipes:
+            print("--")
+            print(pipe.kind.is_spatial)
+            print(pipe.kind.is_temporal)
+        neighbor_pipes_temporal = [pipe for pipe in neighbor_pipes if pipe.kind.is_temporal]
+        neighbor_pipes = [pipe for pipe in neighbor_pipes if pipe.kind.is_spatial]#filter spatial pipes, because this is only relevant for spatial pipes
+
+        print("len neighbor pipes spatial", len(neighbor_pipes))
+        print("len temporal neighbor pipes", len(neighbor_pipes_temporal))
+
+        if len(neighbor_pipes) != 0:
+            list_ver = [pipe.kind.ver for pipe in neighbor_pipes]
+            list_hor = [pipe.kind.hor for pipe in neighbor_pipes]
+        elif len(neighbor_pipes) == 0 and len(neighbor_pipes_temporal) >= 2:
+            #! TEMPORARY, if no spatial pipe, then just choose some color, but more detailed rules apply here.
+            return VertexType.Z, 0
+        elif len(neighbor_pipes) == 0 and len(neighbor_pipes_temporal) == 1:
+            #this is a boundary prism, i.e. determine the node color depending on its prep or meas face
+            if kind.meas is BasisPrism.X or kind.prep is BasisPrism.X: #other possibilities already ruled out in construction of PipeGraph
+                return VertexType.Z, 0
+            if kind.meas is BasisPrism.Z or kind.prep is BasisPrism.Z: #other possibilities already ruled out in construction of PipeGraph
+                return VertexType.X, 0
+        else:
+            raise TQECError("We do not consider sole prisms for zx diagrams.")
+
+        print("list_ver", list_ver)
+        print("list_hor", list_hor)
+
+        if len(set(list_ver)) > 1:
+            raise TQECError("Inconsistent `ver` values of pipes entering the same prism.")
+        if len(set(list_hor)) > 1:
+            raise TQECError("Inconsistent `hor` values of pipes entering the same prism.")
+
+        if list_hor[0] == BasisPrism.X and list_ver[0] == BasisPrism.Z:
+            return VertexType.Z, 0
+        elif list_hor[0] == BasisPrism.Z and list_ver[0] == BasisPrism.X:
+            return VertexType.X, 0
+        else:
+            raise TQECError("Invalid Pipe Configuration.")
+    #import here to avoid overlapping Port imports for block and prism
+    from tqec.computation.prism import Port  # noqa: PLC0415
+    if isinstance(kind, Port):
+        return VertexType.BOUNDARY, 0
+    else:
+        raise NotImplementedError("No further stuff implemented for prisms yet.")
 
 def cube_kind_to_zx(kind: CubeKind) -> tuple[VertexType, FractionLike]:
     """Convert the cube kind to the corresponding PyZX vertex type and phase.

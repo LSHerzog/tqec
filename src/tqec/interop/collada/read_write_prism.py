@@ -11,10 +11,10 @@ import collada.source
 import numpy as np
 import numpy.typing as npt
 
-from prism import BasisPrism, Port, ZXPrism
-from prism_graph import PrismGraph
-from pipe_prism import PrismPipe, PrismPipeKind
-from _geometry_prism import (
+from tqec.computation.prism import BasisPrism, Port, ZXPrism
+from tqec.computation.prism_graph import PrismGraph
+from tqec.computation.pipe_prism import PrismPipe, PrismPipeKind
+from tqec.interop.collada._geometry_prism import (
     PrismColor,
     PrismGeometry,
     PipeGeometry,

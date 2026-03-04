@@ -1,6 +1,8 @@
-from prism import Prism, ZXPrism, BasisPrism, Position3DHex
 from dataclasses import dataclass
+
+from tqec.computation.prism import BasisPrism, Position3DHex, Prism, ZXPrism
 from tqec.utils.exceptions import TQECError
+
 
 @dataclass(frozen=True)
 class PrismPipeKind:
@@ -63,25 +65,25 @@ class PrismPipe:
         hor = kind.hor
         ver = kind.ver
 
-        if hor == BasisPrism.N and ver != BasisPrism.N:
+        if hor is BasisPrism.N and ver is not BasisPrism.N:
             raise ValueError("If hor=N also ver must be N.")
-        if hor != BasisPrism.N and ver == BasisPrism.N:
+        if hor is not BasisPrism.N and ver is BasisPrism.N:
             raise ValueError("If ver=N also hor must be N.")
 
         #temporal pipe -> check whether u and v need temporal connection
-        if hor == BasisPrism.N and ver == BasisPrism.N:
+        if hor is BasisPrism.N and ver is BasisPrism.N:
             if u.position.x != v.position.x or u.position.y!=v.position.y:
                 raise ValueError("If hor=ver=N, then the pipe must be temporal,i.e. "
                 "is allowed to differ only in pos.Z")
         if u.position.z != v.position.z:
-            if hor != BasisPrism.N or ver != BasisPrism.N:
+            if hor is not BasisPrism.N or ver is not BasisPrism.N:
                 raise ValueError("If temporal pipe (u.position.z!=v.position.z) " \
-                "the hor=ver=N is necessary.")
+                f"the hor=ver=N is necessary. You got hor={hor}, ver={ver}" )
         #spatial pipe -> check whether u and v need spatial connection + do the meas/prep colors fit?
-        elif hor == BasisPrism.X and ver == BasisPrism.Z:
+        elif hor is BasisPrism.X and ver is BasisPrism.Z:
             if u.position.z != v.position.z:
                 raise ValueError("hor=X and ver=Z must be a spatial pipe.")
-        elif hor == BasisPrism.Z and ver == BasisPrism.X:
+        elif hor is BasisPrism.Z and ver is BasisPrism.X:
             if u.position.z != v.position.z:
                 raise ValueError("hor=Z and ver=X must be a spatial pipe.")
 
@@ -104,6 +106,7 @@ class PrismPipe:
             if isinstance(u.kind, ZXPrism):
                 if u.kind.meas != BasisPrism.N:
                     raise ValueError("The prep face that touches the temporal pipe must be N.")
+            if isinstance(v.kind, ZXPrism):
                 if v.kind.prep != BasisPrism.N:
                     raise ValueError("The meas face touching the temporal pipe must be N.")
 

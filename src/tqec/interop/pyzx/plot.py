@@ -19,6 +19,7 @@ from tqec.interop.pyzx.positioned import PositionedZX
 from tqec.interop.pyzx.utils import is_boundary, is_hadamard, zx_to_pauli
 from tqec.utils.enums import Pauli
 from tqec.utils.position import Position3D
+from tqec.computation.prism import Position3DHex
 
 if TYPE_CHECKING:
     from tqec.computation.correlation import CorrelationSurface
@@ -30,8 +31,13 @@ def _node_color(g: GraphS, v: int) -> RGBA:  # pragma: no cover
     return TQECColor(str(pauli)).rgba
 
 
-def _positions_array(*positions: Position3D) -> npt.NDArray[numpy.int_]:  # pragma: no cover
-    return numpy.array([astuple(p) for p in positions]).T
+def _positions_array(*positions: Position3D | Position3DHex) -> npt.NDArray[numpy.int_]:  # pragma: no cover
+    if all([isinstance(pos, Position3D) for pos in positions]):
+        return numpy.array([astuple(p) for p in positions]).T
+    elif all([isinstance(pos, Position3DHex) for pos in positions]):
+        return numpy.array([pos.to_euclidean() for pos in positions]).T
+    else:
+        raise TQECColor("No mixing up of Position3D and Position3DHex is allowed.")
 
 
 def draw_positioned_zx_graph_on(
@@ -56,6 +62,10 @@ def draw_positioned_zx_graph_on(
     pmap = graph.positions
     vis_nodes = [n for n in g.vertices() if not is_boundary(g, n)]
     vis_nodes_array = _positions_array(*[pmap[n] for n in vis_nodes])
+    for n in vis_nodes:
+        print(f"vertex {n}: pos={pmap[n]}, euclidean={pmap[n].to_euclidean()}")
+    print("vis_nodes_array shape:", vis_nodes_array.shape)
+    print("vis_nodes_array:\n", vis_nodes_array)
     if vis_nodes_array.size > 0:
         ax.scatter(
             *vis_nodes_array,

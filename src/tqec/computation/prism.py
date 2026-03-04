@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import astuple, dataclass
 from enum import Enum
 from typing import Any
+import numpy as np
 
 from tqec.utils.exceptions import TQECError
 
@@ -47,6 +48,23 @@ class Position3DHex(Vec3DHex):
             elif other.x-self.x==1 and other.y-self.y==-1:
                 _is_neighbor = True
         return _is_neighbor
+
+    def to_euclidean(self, scale: float = 1.0, z_spacing: float = 1.0) -> tuple[float, float, float]:
+        """Translate hex/triangular coord to euclidian coords assuming that row has same y value."""
+        import math
+        h = math.sqrt(3) / 2
+        pointing_up = (self.x % 2 == 0)
+        cy_offset = h / 3 if pointing_up else 2 * h / 3
+
+        # cell origin (bottom-left corner of triangle template)
+        ox = self.x / 2.0 + (self.y // 2) * 0.5
+        oy = (self.y // 2) * h
+
+        # centroid = cell_origin + offset, then scaled around centroid
+        cx = (ox + 0.5) * scale - 0.5
+        cy = (oy + cy_offset) * scale - cy_offset
+
+        return cx, cy, self.z * z_spacing
 
 class BasisPrism(Enum):
     X = "X"
