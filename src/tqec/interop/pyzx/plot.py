@@ -14,12 +14,12 @@ from pyzx import draw_3d
 from pyzx.graph.graph_s import GraphS
 from pyzx.pauliweb import PauliWeb
 
+from tqec.computation.prism import Position3DHex
 from tqec.interop.color import RGBA, TQECColor
 from tqec.interop.pyzx.positioned import PositionedZX
 from tqec.interop.pyzx.utils import is_boundary, is_hadamard, zx_to_pauli
 from tqec.utils.enums import Pauli
 from tqec.utils.position import Position3D
-from tqec.computation.prism import Position3DHex
 
 if TYPE_CHECKING:
     from tqec.computation.correlation import CorrelationSurface
@@ -62,10 +62,6 @@ def draw_positioned_zx_graph_on(
     pmap = graph.positions
     vis_nodes = [n for n in g.vertices() if not is_boundary(g, n)]
     vis_nodes_array = _positions_array(*[pmap[n] for n in vis_nodes])
-    for n in vis_nodes:
-        print(f"vertex {n}: pos={pmap[n]}, euclidean={pmap[n].to_euclidean()}")
-    print("vis_nodes_array shape:", vis_nodes_array.shape)
-    print("vis_nodes_array:\n", vis_nodes_array)
     if vis_nodes_array.size > 0:
         ax.scatter(
             *vis_nodes_array,

@@ -49,8 +49,20 @@ class Position3DHex(Vec3DHex):
                 _is_neighbor = True
         return _is_neighbor
 
-    def to_euclidean(self, scale: float = 1.0, z_spacing: float = 1.0) -> tuple[float, float, float]:
-        """Translate hex/triangular coord to euclidian coords assuming that row has same y value."""
+    def to_euclidean(
+        self,
+        scale: float = 1.0,
+        z_spacing: float = 1.0,
+    ) -> tuple[float, float, float]:
+        """Translate hex/triangular coord to Euclidean coords.
+
+        xy scaling matches read_write_prism.py: the centroid is scaled
+        uniformly, so centroid-to-centroid distances expand by `scale`
+        in every direction.
+
+        scale     = 1 + spacing        (xy, from write_prism_graph_to_dae_file)
+        z_spacing = 1 + spacing/√3     (z,  from write_prism_graph_to_dae_file)
+        """
         import math
         h = math.sqrt(3) / 2
         pointing_up = (self.x % 2 == 0)
@@ -60,11 +72,55 @@ class Position3DHex(Vec3DHex):
         ox = self.x / 2.0 + (self.y // 2) * 0.5
         oy = (self.y // 2) * h
 
-        # centroid = cell_origin + offset, then scaled around centroid
-        cx = (ox + 0.5) * scale - 0.5
-        cy = (oy + cy_offset) * scale - cy_offset
+        # centroid scaled uniformly (matches _scaled_cell_origin in read_write_prism.py)
+        cx = (ox + 0.5) * scale
+        cy = (oy + cy_offset) * scale
 
         return cx, cy, self.z * z_spacing
+
+    def shift_triangle_direction_a(self) -> Position3DHex:
+        """Shift along direction a for generating triangles.
+
+        Important: This method should only be used to create triangle boundaries
+        for microscopic positions to find stabilizers.
+        This is NOT for macroscopic prism positinos.
+        """
+        assert self.z == 0, "for microscopic positions, z=0 is necessary."
+        x = self.x+1
+        y = self.y+1
+        return Position3DHex(x,y,self.z)
+
+    def shift_triangle_direction_b(self) -> Position3DHex:
+        """Shift along direction b for generating triangles.
+
+        Important: This method should only be used to create triangle boundaries
+        for microscopic positions to find stabilizers.
+        This is NOT for macroscopic prism positinos.
+        """
+        assert self.z == 0, "for microscopic positions, z=0 is necessary."
+        if self.x%2==0:
+            x = self.x + 3
+            y = self.y - 1
+        else:
+            x = self.x + 1
+            y = self.y -1
+        return Position3DHex(x,y,self.z)
+
+    def shift_triangle_direction_c(self) -> Position3DHex:
+        """Shift along direction c for generating triangles.
+
+        Important: This method should only be used to create triangle boundaries
+        for microscopic positions to find stabilizers.
+        This is NOT for macroscopic prism positinos.
+        """
+        assert self.z == 0, "for microscopic positions, z=0 is necessary."
+        if self.x%2==0:
+            x = self.x - 1
+            y = self.y + 3
+        else:
+            x = self.x - 1
+            y = self.y + 1
+        return Position3DHex(x,y,self.z)
 
 class BasisPrism(Enum):
     X = "X"
@@ -123,6 +179,54 @@ class ZXPrism:
 
         """
         return ZXPrism(*map(BasisPrism, string.upper()))
+
+    @staticmethod
+    def patch_triangle(d: int, left_corner: Position3DHex, triangle_type: str) -> dict[str, list[Position3DHex]]:
+        """Find the microscopic positions of boundary vertices of a triangle."""
+        if triangle_type not in {"upwards", "downwards"}:
+            raise TQECError("Incorrect microscopic triangle alignment chosen.")
+        if triangle_type == "upwards":
+            if left_corner.x % 2 == 0:
+                #direction a
+                dira = [left_corner]
+                for i in range(1,d):
+                    dira.append(dira[i-1].shift_triangle_direction_a())
+                #direction b
+                dirb = [left_corner]
+                for i in range(1,d):
+                    dirb.append(dirb[i-1].shift_triangle_direction_b())
+                #direction c
+                dirc = [dirb[-1]]
+                for i in range(1,d):
+                    dirc.append(dirc[i-1].shift_triangle_direction_c())
+            else:
+                raise NotImplementedError("other start positions not implemented yet." \
+                "maybe not necessary, just choose convention")
+        elif triangle_type == "downwards":
+            pass
+
+        return {"a": dira, "b": dirb, "c": dirc}
+
+    @staticmethod
+    def find_interior(triangle_bdry:  dict[str, list[Position3DHex]]):
+        """Find interior nodes of a given triangle boundary."""
+        pass
+
+
+    @staticmethod
+    def patch_stabilizers(d: int, left_corner: Position3DHex) -> list[list[Position3DHex]]:
+        """Create patch stabilizers for a single patch.
+
+        Since the stabilizers are self-dual if no merge is performed, this returns a single list
+        of stabilizers representing both X and Z stabilizers.
+
+        Note that Position3DHex has z=0 all the time, because we are considering microscopic
+        positions here in 2D.
+        """
+        dct = ZXPrism.patch_triangle(d, left_corner, triangle_type = "upwards")
+        nodes_triangle = ZXPrism.find_interior(dct)
+
+
 
 
 class Port:

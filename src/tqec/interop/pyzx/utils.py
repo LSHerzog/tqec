@@ -6,12 +6,10 @@ from pyzx.graph.graph_s import GraphS
 from pyzx.utils import EdgeType, FractionLike, VertexType, vertex_is_zx
 
 from tqec.computation.cube import CubeKind, Port, ZXCube
-from tqec.computation.prism import PrismKind, ZXPrism
+from tqec.computation.pipe_prism import PrismPipe
+from tqec.computation.prism import BasisPrism, PrismKind, ZXPrism
 from tqec.utils.enums import Basis, Pauli
 from tqec.utils.exceptions import TQECError
-from tqec.computation.pipe_prism import PrismPipe
-from tqec.computation.prism import BasisPrism
-
 
 
 def is_zx_no_phase(g: GraphS, v: int) -> bool:
@@ -49,35 +47,29 @@ def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[
     Since prisms have no ZX type by themselfes, one needs the corresponding neighboring pipes
     because the pipe colors determine the zx type of the node
     """
-    print("type kind", kind)
     if isinstance(kind, ZXPrism):
-        for pipe in neighbor_pipes:
-            print("--")
-            print(pipe.kind.is_spatial)
-            print(pipe.kind.is_temporal)
         neighbor_pipes_temporal = [pipe for pipe in neighbor_pipes if pipe.kind.is_temporal]
-        neighbor_pipes = [pipe for pipe in neighbor_pipes if pipe.kind.is_spatial]#filter spatial pipes, because this is only relevant for spatial pipes
-
-        print("len neighbor pipes spatial", len(neighbor_pipes))
-        print("len temporal neighbor pipes", len(neighbor_pipes_temporal))
+        neighbor_pipes_spatial = [pipe for pipe in neighbor_pipes if pipe.kind.is_spatial]#filter spatial pipes, because this is only relevant for spatial pipes
 
         if len(neighbor_pipes) != 0:
             list_ver = [pipe.kind.ver for pipe in neighbor_pipes]
             list_hor = [pipe.kind.hor for pipe in neighbor_pipes]
-        elif len(neighbor_pipes) == 0 and len(neighbor_pipes_temporal) >= 2:
+        else:
+            raise TQECError("We do not consider sole prisms for zx diagrams.")
+
+        if len(neighbor_pipes_spatial) == 0 and len(neighbor_pipes_temporal) >= 2:
             #! TEMPORARY, if no spatial pipe, then just choose some color, but more detailed rules apply here.
             return VertexType.Z, 0
-        elif len(neighbor_pipes) == 0 and len(neighbor_pipes_temporal) == 1:
+        elif len(neighbor_pipes_spatial) == 0 and len(neighbor_pipes_temporal) == 1:
             #this is a boundary prism, i.e. determine the node color depending on its prep or meas face
             if kind.meas is BasisPrism.X or kind.prep is BasisPrism.X: #other possibilities already ruled out in construction of PipeGraph
                 return VertexType.Z, 0
             if kind.meas is BasisPrism.Z or kind.prep is BasisPrism.Z: #other possibilities already ruled out in construction of PipeGraph
                 return VertexType.X, 0
-        else:
-            raise TQECError("We do not consider sole prisms for zx diagrams.")
 
-        print("list_ver", list_ver)
-        print("list_hor", list_hor)
+        #remove the BasisPrism.N entries since they do not lead to inconsistency
+        list_ver = [el for el in list_ver if el is not BasisPrism.N]
+        list_hor = [el for el in list_hor if el is not BasisPrism.N]
 
         if len(set(list_ver)) > 1:
             raise TQECError("Inconsistent `ver` values of pipes entering the same prism.")
