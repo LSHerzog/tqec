@@ -6,6 +6,7 @@ from dataclasses import astuple, dataclass
 from enum import Enum
 from typing import Any
 import numpy as np
+from collections import Counter
 
 from tqec.utils.exceptions import TQECError
 
@@ -77,6 +78,78 @@ class Position3DHex(Vec3DHex):
         cy = (oy + cy_offset) * scale
 
         return cx, cy, self.z * z_spacing
+
+    def shift_standard_direction_plus1(self) -> Position3DHex:
+        """Shift along direction +1.
+
+        This is a standard direction in the triangular lattice.
+        """
+        if self.x%2==0:
+            x = self.x+1
+        else:
+            x = self.x-1
+        y = self.y+1
+        tup = [x, y, self.z]
+        return Position3DHex(*tup.copy())
+
+    def shift_standard_direction_minus1(self) -> Position3DHex:
+        """Shift along direction -1.
+
+        This is a standard direction in the triangular lattice.
+        """
+        if self.x%2==0:
+            x = self.x+1
+        else:
+            x = self.x-1
+        y = self.y-1
+        tup = [x, y, self.z]
+        return Position3DHex(*tup.copy())
+
+    def shift_standard_direction_plus2(self) -> Position3DHex:
+        """Shift along direction +2.
+
+        This is a standard direction in the triangular lattice.
+        """
+        if self.x%2==0:
+            y = self.y+1
+        else:
+            y = self.y-1
+        x = self.x+1
+        tup = [x, y, self.z]
+        return Position3DHex(*tup.copy())
+
+    def shift_standard_direction_minus2(self) -> Position3DHex:
+        """Shift along direction -2.
+
+        This is a standard direction in the triangular lattice.
+        """
+        if self.x%2==0:
+            y = self.y+1
+        else:
+            y = self.y-1
+        x = self.x-1
+        return Position3DHex(x,y,self.z)
+
+    def shift_standard_direction_plus3(self) -> Position3DHex:
+        """Shift along direction +3.
+
+        This is a standard direction in the triangular lattice.
+        """
+        x = self.x+1
+        y = self.y-1
+        tup = [x, y, self.z]
+        return Position3DHex(*tup.copy())
+
+    def shift_standard_direction_minus3(self) -> Position3DHex:
+        """Shift along direction -3.
+
+        This is a standard direction in the triangular lattice.
+        """
+        x = self.x-1
+        y = self.y+1
+        tup = [x, y, self.z]
+        return Position3DHex(*tup.copy())
+
 
     def shift_triangle_direction_a(self) -> Position3DHex:
         """Shift along direction a for generating triangles.
@@ -181,8 +254,11 @@ class ZXPrism:
         return ZXPrism(*map(BasisPrism, string.upper()))
 
     @staticmethod
-    def patch_triangle(d: int, left_corner: Position3DHex, triangle_type: str) -> dict[str, list[Position3DHex]]:
-        """Find the microscopic positions of boundary vertices of a triangle."""
+    def patch_triangle_bdry(d: int, left_corner: Position3DHex, triangle_type: str) -> dict[str, list[Position3DHex]]:
+        """Find the microscopic positions of boundary vertices of a triangle.
+
+        Assumes that left_corner has x even and y even. We choose this convention throughout this code.
+        """
         if triangle_type not in {"upwards", "downwards"}:
             raise TQECError("Incorrect microscopic triangle alignment chosen.")
         if triangle_type == "upwards":
@@ -205,16 +281,148 @@ class ZXPrism:
         elif triangle_type == "downwards":
             pass
 
-        return {"a": dira, "b": dirb, "c": dirc}
+        return {"a": dira[::-1], "b": dirb, "c": dirc} #dira turned around for consistency in reduce_weight_six_to_four
 
     @staticmethod
-    def find_interior(triangle_bdry:  dict[str, list[Position3DHex]]):
-        """Find interior nodes of a given triangle boundary."""
-        pass
+    def patch_adjacent_bulk_stabilizers(init_point: Position3DHex) -> list[list[Position3DHex]]:
+        """Find the stabilizer 3 plaquettes corresponding to the init_point."""
+        if init_point.x % 2 == 0:
+            #note that this choice is not unique as some directions yield same results for this case
+            plaq1 = [init_point]
+            plaq1.append(plaq1[-1].shift_standard_direction_plus2())
+            plaq1.append(plaq1[-1].shift_standard_direction_plus2())
+            plaq1.append(plaq1[-1].shift_standard_direction_plus3())
+            plaq1.append(plaq1[-1].shift_standard_direction_minus2())
+            plaq1.append(plaq1[-1].shift_standard_direction_minus2())
+            plaq2 = [init_point]
+            plaq2.append(plaq2[-1].shift_standard_direction_plus1())
+            plaq2.append(plaq2[-1].shift_standard_direction_plus1())
+            plaq2.append(plaq2[-1].shift_standard_direction_minus2())
+            plaq2.append(plaq2[-1].shift_standard_direction_minus2())
+            plaq2.append(plaq2[-1].shift_standard_direction_plus3())
+            plaq3 = [init_point]
+            plaq3.append(plaq3[-1].shift_standard_direction_minus2())
+            plaq3.append(plaq3[-1].shift_standard_direction_minus2())
+            plaq3.append(plaq3[-1].shift_standard_direction_plus3())
+            plaq3.append(plaq3[-1].shift_standard_direction_plus3())
+            plaq3.append(plaq3[-1].shift_standard_direction_plus2())
+        else:
+            plaq1 = [init_point]
+            plaq1.append(plaq1[-1].shift_standard_direction_plus3())
+            plaq1.append(plaq1[-1].shift_standard_direction_plus3())
+            plaq1.append(plaq1[-1].shift_standard_direction_minus2())
+            plaq1.append(plaq1[-1].shift_standard_direction_minus2())
+            plaq1.append(plaq1[-1].shift_standard_direction_plus1())
+            plaq2 = [init_point]
+            plaq2.append(plaq2[-1].shift_standard_direction_plus1())
+            plaq2.append(plaq2[-1].shift_standard_direction_plus1())
+            plaq2.append(plaq2[-1].shift_standard_direction_plus3())
+            plaq2.append(plaq2[-1].shift_standard_direction_plus3())
+            plaq2.append(plaq2[-1].shift_standard_direction_minus2())
+            plaq3 = [init_point]
+            plaq3.append(plaq3[-1].shift_standard_direction_minus3())
+            plaq3.append(plaq3[-1].shift_standard_direction_minus3())
+            plaq3.append(plaq3[-1].shift_standard_direction_minus1())
+            plaq3.append(plaq3[-1].shift_standard_direction_minus1())
+            plaq3.append(plaq3[-1].shift_standard_direction_plus3())
 
+        return [plaq1, plaq2, plaq3]
 
     @staticmethod
-    def patch_stabilizers(d: int, left_corner: Position3DHex) -> list[list[Position3DHex]]:
+    def check_within_bdrys(pos: Position3DHex, bdry_dct: dict[str, list[Position3DHex]], d: int) -> bool:
+        """Check whether a given pos is contained in the bdry.
+
+        This is greedily done by checking each direction d steps and
+        whether 2 boundary elements are encountered.
+        """
+        within_bdries = False
+        bdry = []
+        for lst in bdry_dct.values():#flattened bdries
+            bdry += lst
+
+        #direction 1
+        tmpp = [pos]
+        for _ in range(d-1):
+            tmpp.append(tmpp[-1].shift_standard_direction_plus1())
+        tmpm = [pos]
+        for _ in range(d-1):
+            tmpm.append(tmpm[-1].shift_standard_direction_minus1())
+
+        if any(p in bdry for p in tmpp) and any(p in bdry for p in tmpm):
+            within_bdries = True
+            return within_bdries
+
+        #direction 2
+        tmpp = [pos]
+        for _ in range(d-1):
+            tmpp.append(tmpp[-1].shift_standard_direction_plus2())
+        tmpm = [pos]
+        for _ in range(d-1):
+            tmpm.append(tmpm[-1].shift_standard_direction_minus2())
+
+        if any(p in bdry for p in tmpp) and any(p in bdry for p in tmpm):
+            within_bdries = True
+            return within_bdries
+
+        #direction 3
+        tmpp = [pos]
+        for _ in range(d-1):
+            tmpp.append(tmpp[-1].shift_standard_direction_plus3())
+        tmpm = [pos]
+        for _ in range(d-1):
+            tmpm.append(tmpm[-1].shift_standard_direction_minus3())
+
+        if any(p in bdry for p in tmpp) and any(p in bdry for p in tmpm):
+            within_bdries = True
+            return within_bdries
+
+        return within_bdries
+
+    @staticmethod
+    def remove_duplicate_stabilizers(stabilizers: list[list[Position3DHex]]) -> list[list[Position3DHex]]:
+        """Remove duplicate stabilizers, keeping one copy of each."""
+        seen = set()
+        result = []
+        for stab in stabilizers:
+            key = frozenset(stab)
+            if key not in seen:
+                seen.add(key)
+                result.append(stab)
+        return result
+
+    @staticmethod
+    def remove_low_overlap_stabilizers(stabilizers: list[list[Position3DHex]], bdry_dct: dict[str, list[Position3DHex]], d: int) -> list[list[Position3DHex]]:
+        """Remove Stabilizers that have <=2 nodes within the patch."""
+        stabilizers_reduced = []
+        for stab in stabilizers:
+            bool_lst = [ZXPrism.check_within_bdrys(node, bdry_dct, d) for node in stab]
+            num_inside = np.sum([1 for el in bool_lst if el])
+            if num_inside > 2:
+                stabilizers_reduced.append(stab)
+        return stabilizers_reduced
+
+    @staticmethod
+    def reduce_weight_six_to_four(stabilizers: list[list[Position3DHex]], reduce_bdry: list[str], nodes_triangle_bdry: dict[str, list[Position3DHex]], d: int) -> list[list[Position3DHex]]:
+        """Reduce stabilizers along one or more given boundaries.
+
+        weight-6 stabilizers are reduced to weight-4 at the boundary.
+        """
+        if any([el not in {"a", "b", "c"} for el in reduce_bdry]):
+            raise TQECError("`reduce_bdry` should have elements `a`, `b` and/or `c`.")
+
+        for el in reduce_bdry:
+            for node in nodes_triangle_bdry[el][:-1]: #depends on the order of the boundary node lists
+                for i, stab in enumerate(stabilizers):
+                    bool_lst = [ZXPrism.check_within_bdrys(node, nodes_triangle_bdry, d) for node in stab]
+                    num_inside = np.sum([1 for el in bool_lst if el])
+                    if node.x %2 == 0 and node in stab and num_inside <= 4:
+                        stab_reduced = [el for j, el in enumerate(stab) if bool_lst[j]]
+                        stabilizers[i] = stab_reduced
+
+        return stabilizers
+
+    @staticmethod
+    def patch_stabilizers(d: int, left_corner: Position3DHex, reduce_bdry: list[str]) -> list[list[Position3DHex]]:
         """Create patch stabilizers for a single patch.
 
         Since the stabilizers are self-dual if no merge is performed, this returns a single list
@@ -222,10 +430,107 @@ class ZXPrism:
 
         Note that Position3DHex has z=0 all the time, because we are considering microscopic
         positions here in 2D.
-        """
-        dct = ZXPrism.patch_triangle(d, left_corner, triangle_type = "upwards")
-        nodes_triangle = ZXPrism.find_interior(dct)
 
+        `reduce_bdry` decides along which boundary the weight-6 stabilizers `outside` the triangle
+        are reduced to weight-4 stabilizers.
+        """
+        nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner, triangle_type = "upwards")
+
+        stabilizers =  []
+        #add plaquettes along boundary
+        for bdry in nodes_triangle_bdry.values():
+            for node in bdry:
+                if node.x % 2 == 0:
+                    stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
+
+        appear_once_within = [left_corner]#just initialize somehow to start while loop
+        while len(appear_once_within) != 0:
+            #flatten the stabilizers
+            flattened_stabs = [p for sublist in stabilizers for p in sublist]
+
+            # filter nodes that are within the triangle AND appear only once in the stabilizers
+            appear_once = [p for p in flattened_stabs if Counter(flattened_stabs)[p] == 1]
+            appear_once_within = [p for p in appear_once if ZXPrism.check_within_bdrys(p, nodes_triangle_bdry, d)]
+            if len(appear_once_within) == 0:
+                break
+
+            #fill up sprialing to the center of the triangle
+            #either all odd or even nodes
+            even_nodes = [node for node in appear_once_within if node.x % 2 == 0]
+            if len(even_nodes) > 0:
+                for node in even_nodes:
+                    stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
+            else:
+                for node in appear_once_within:
+                    if node.x % 2 != 0:
+                        stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
+
+        stabilizers = ZXPrism.remove_duplicate_stabilizers(stabilizers)
+        stabilizers = ZXPrism.remove_low_overlap_stabilizers(stabilizers, nodes_triangle_bdry, d)
+        stabilizers = ZXPrism.reduce_weight_six_to_four(stabilizers, reduce_bdry, nodes_triangle_bdry, d)
+        return stabilizers
+
+    @staticmethod
+    def star_operator_patch(stabilizers: list[list[Position3DHex]], nodes_triangle_bdry: dict):
+        """Search for a star operator in a given patch.
+        Start at bdry of type "a" -> go d steps in "+3" direction
+        Start at bdry of type "b" -> go d steps in "+1" direction
+        Start at bdry of type "c" -> go d steps in "-2" direction
+        """
+        d = len(nodes_triangle_bdry["a"])
+
+        def walk(start: Position3DHex, bdry: str) -> list[Position3DHex]:
+            shift_fn = {
+                "a": lambda p: p.shift_standard_direction_plus3(),
+                "b": lambda p: p.shift_standard_direction_plus1(),
+                "c": lambda p: p.shift_standard_direction_minus2(),
+            }[bdry]
+            temp_nodes = [start]
+            for i in range(d):
+                if i % 2 == 0:
+                    temp_nodes.append(shift_fn(temp_nodes[-1]))
+                else:
+                    temp_nodes.append(shift_fn(shift_fn(temp_nodes[-1])))
+            return temp_nodes
+
+        # try all combinations of starting indices across the three boundaries
+        def middle_out(n: int) -> list[int]:
+            """Yield indices starting from the middle, alternating left and right."""
+            mid = n // 2
+            indices = [mid]
+            for offset in range(1, n):
+                if mid - offset >= 1:
+                    indices.append(mid - offset)
+                if mid + offset <= n - 2:
+                    indices.append(mid + offset)
+            return indices
+
+        for idx_a in middle_out(len(nodes_triangle_bdry["a"])):
+            for idx_b in middle_out(len(nodes_triangle_bdry["b"])):
+                for idx_c in middle_out(len(nodes_triangle_bdry["c"])):
+                    walk_a = walk(nodes_triangle_bdry["a"][idx_a], "a")
+                    walk_b = walk(nodes_triangle_bdry["b"][idx_b], "b")
+                    walk_c = walk(nodes_triangle_bdry["c"][idx_c], "c")
+
+                    intersection = set(walk_a) & set(walk_b) & set(walk_c)
+                    if intersection:
+                        intersection_point = next(iter(intersection))
+                        star_op = [intersection_point]
+                        arms = [[], [], []] #a,b,c
+                        for k, walk_nodes in enumerate([walk_a, walk_b, walk_c]):
+                            for el in walk_nodes:
+                                if el == intersection_point:
+                                    break
+                                star_op.append(el)
+                                arms[k].append(el)
+
+                        check_ok_middle = len(arms[0]) % 2 == 0 and len(arms[1]) % 2 == 0 and len(arms[2]) % 2 == 0 #even if middle point not included
+                        thres = 0
+                        check_ok_len = len(arms[0]) > thres and len(arms[1]) > thres and len(arms[2]) > thres 
+                        if check_ok_middle and check_ok_len:
+                            return star_op
+
+        raise TQECError("No intersection point found for star operator.")
 
 
 
