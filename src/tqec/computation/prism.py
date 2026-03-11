@@ -25,6 +25,80 @@ class Position3DHex(Vec3DHex):
 
     #!todo add methods like shift_by, shift_in_direction, is_neighbor etc.
 
+    def distance_spatial(self, other: Position3DHex) -> int:
+        """Determine distance between two positions."""
+        if self.y % 2 == 0:
+            xy_self = -self.x-self.y
+        else:
+            xy_self = -self.x-self.y +1
+
+        if other.y % 2 == 0:
+            xy_other = -other.x - other.y
+        else:
+            xy_other = -other.x - other.y +1
+        return max([abs(self.x-other.x), abs(self.y-other.y), abs(xy_self -xy_other)])
+
+    def neighbors_spatial(self) -> list[Position3DHex]:
+        """Find all spatial neighbors of the point."""
+        if self.y % 2 == 0:
+            return [Position3DHex(self.x-1, self.y+1, self.z),
+                    Position3DHex(self.x+1, self.y+1, self.z),
+                    Position3DHex(self.x+1, self.y-1, self.z)]
+        else:
+            return [Position3DHex(self.x-1, self.y-1, self.z),
+                    Position3DHex(self.x-1, self.y+1, self.z),
+                    Position3DHex(self.x+1, self.y-1, self.z)]
+
+    def shortest_path_spatial(self, other: Position3DHex) -> list[Position3DHex]:
+        """Find shortest Path between two points."""
+        path = [self]
+        current = self
+        while (current.x, current.y) != (other.x, other.y):
+            neighbors = current.neighbors_spatial()
+            best = min(neighbors, key=lambda n: n.distance_spatial(other))
+            path.append(best)
+            current = best
+        return path
+
+    def macro_diff_to_micro_diff(self, d:int, centroid_current, macro_next) -> Position3DHex:
+        """Translate Macroscopic positions to microscopic poistitions which are d dependent.
+
+        The self is the position of the current patch,
+        centroid_current is the microscopic position of this patch's centroid.
+        This function takes another macroscopic neighbor macro_next and finds its centroid
+
+        If your input does not match up, this method yields nonsense.
+        """
+        if not self.is_neighbour(macro_next):
+            raise TQECError("Microscopic cnetroids can only be found between neighboring patches.")
+
+        if self.x % 2 == 0:
+            if self.x - macro_next.x == -1 and self.y - macro_next.y == -1:
+                for _ in range(d+1):
+                    centroid_current = centroid_current.shift_standard_direction_plus2()
+            elif self.x - macro_next.x == -1 and self.y - macro_next.y == +1:
+                for _ in range(d+1):
+                    centroid_current = centroid_current.shift_standard_direction_minus1()
+            elif self.x - macro_next.x == +1 and self.y - macro_next.y == -1:
+                for _ in range(d+1):
+                    centroid_current = centroid_current.shift_standard_direction_minus3()
+            else:
+                raise TQECError("something off")
+        else:  # noqa: PLR5501
+            if self.x - macro_next.x == -1 and self.y - macro_next.y == 1:
+                for _ in range(d+1):
+                    centroid_current = centroid_current.shift_standard_direction_plus3()
+            elif self.x - macro_next.x == 1 and self.y - macro_next.y == -1:
+                for _ in range(d+1):
+                    centroid_current = centroid_current.shift_standard_direction_plus1()
+            elif self.x - macro_next.x == 1 and self.y - macro_next.y == 1:
+                for _ in range(d+1):
+                    centroid_current = centroid_current.shift_standard_direction_minus2()
+            else:
+                raise TQECError("something off")
+
+        return centroid_current
+
     def is_neighbour(self, other: Position3DHex) -> bool:
         """Check whether two Prisms are neighbors.
 
@@ -255,9 +329,26 @@ class ZXPrism:
 
     @staticmethod
     def patch_triangle_bdry(d: int, left_corner: Position3DHex, triangle_type: str) -> dict[str, list[Position3DHex]]:
-        """Find the microscopic positions of boundary vertices of a triangle.
+        r"""Find the microscopic positions of boundary vertices of a triangle.
 
-        Assumes that left_corner has x even and y even. We choose this convention throughout this code.
+        Assumes that left_corner has x even and y even.
+        We choose this convention throughout this code.
+
+        left_corner differs for the two triangle_types. `x` denotes the position of `left_corner`
+        if roughly mapped to euclidian coords:
+        triangle_type "upwards":
+            /|
+          /  |
+        x    |
+          \  |
+            \|
+        triangle type "downwards:
+        | \
+        |   \
+        |    /
+        |   /
+        | /
+        x
         """
         if triangle_type not in {"upwards", "downwards"}:
             raise TQECError("Incorrect microscopic triangle alignment chosen.")
@@ -276,10 +367,20 @@ class ZXPrism:
                 for i in range(1,d):
                     dirc.append(dirc[i-1].shift_triangle_direction_c())
             else:
-                raise NotImplementedError("other start positions not implemented yet." \
-                "maybe not necessary, just choose convention")
+                raise TQECError("`left_corner` requires x to be even. This is the convention here")
         elif triangle_type == "downwards":
-            pass
+            if left_corner.x % 2 == 0:
+                dira = [left_corner]
+                for i in range(1,d):
+                    dira.append(dira[i-1].shift_triangle_direction_a())
+                dirc = [left_corner]
+                for i in range(1,d):
+                    dirc.append(dirc[-1].shift_triangle_direction_c())
+                dirb = [dirc[-1]]
+                for i in range(1,d):
+                    dirb.append(dirb[-1].shift_triangle_direction_b())
+            else:
+                raise TQECError("`left_corner` requires x to be even. This is the convention here")
 
         return {"a": dira[::-1], "b": dirb, "c": dirc} #dira turned around for consistency in reduce_weight_six_to_four
 
@@ -422,7 +523,7 @@ class ZXPrism:
         return stabilizers
 
     @staticmethod
-    def patch_stabilizers(d: int, left_corner: Position3DHex, reduce_bdry: list[str]) -> list[list[Position3DHex]]:
+    def patch_stabilizers(d: int, triangle_type: str, left_corner: Position3DHex, reduce_bdry: list[str]) -> list[list[Position3DHex]]:
         """Create patch stabilizers for a single patch.
 
         Since the stabilizers are self-dual if no merge is performed, this returns a single list
@@ -434,7 +535,7 @@ class ZXPrism:
         `reduce_bdry` decides along which boundary the weight-6 stabilizers `outside` the triangle
         are reduced to weight-4 stabilizers.
         """
-        nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner, triangle_type = "upwards")
+        nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner, triangle_type)
 
         stabilizers =  []
         #add plaquettes along boundary
@@ -471,20 +572,37 @@ class ZXPrism:
         return stabilizers
 
     @staticmethod
-    def star_operator_patch(stabilizers: list[list[Position3DHex]], nodes_triangle_bdry: dict):
+    def star_operator_patch(triangle_type: str, nodes_triangle_bdry: dict):
         """Search for a star operator in a given patch.
+
+        for triangle_type upwards:
         Start at bdry of type "a" -> go d steps in "+3" direction
         Start at bdry of type "b" -> go d steps in "+1" direction
         Start at bdry of type "c" -> go d steps in "-2" direction
+
+        for triangle_type downwards:
+        Start at bdry of type "a" -> go d steps in "-3" direction
+        Start at bdry of type "b" -> go d steps in "-1" direction
+        Start at bdry of type "c" -> go d steps in "+2" direction
         """
+        if triangle_type not in {"upwards", "downwards"}:
+            raise TQECError("Incorrect microscopic triangle alignment chosen.")
+
         d = len(nodes_triangle_bdry["a"])
 
         def walk(start: Position3DHex, bdry: str) -> list[Position3DHex]:
-            shift_fn = {
-                "a": lambda p: p.shift_standard_direction_plus3(),
-                "b": lambda p: p.shift_standard_direction_plus1(),
-                "c": lambda p: p.shift_standard_direction_minus2(),
-            }[bdry]
+            if triangle_type == "upwards":
+                shift_fn = {
+                    "a": lambda p: p.shift_standard_direction_plus3(),
+                    "b": lambda p: p.shift_standard_direction_plus1(),
+                    "c": lambda p: p.shift_standard_direction_minus2(),
+                }[bdry]
+            elif triangle_type == "downwards":
+                shift_fn = {
+                    "a": lambda p: p.shift_standard_direction_minus3(),
+                    "b": lambda p: p.shift_standard_direction_minus1(),
+                    "c": lambda p: p.shift_standard_direction_plus2(),
+                }[bdry]
             temp_nodes = [start]
             for i in range(d):
                 if i % 2 == 0:

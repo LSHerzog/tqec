@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from networkx import Graph, is_connected
-from tqec.computation.prism import Port, Position3DHex, PrismKind, prism_kind_from_string, Prism
+from tqec.computation.prism import Port, Position3DHex, PrismKind, prism_kind_from_string, Prism, ZXPrism
 from tqec.computation.pipe_prism import PrismPipeKind, PrismPipe
 from typing import TYPE_CHECKING, Any, cast
 from tqec.computation.correlation import find_correlation_surfaces
@@ -95,3 +95,75 @@ class PrismGraph:
         buf = io.BytesIO()
         write_prism_graph_to_dae_file(self, buf, spacing = 3.0)
         return display_collada_model(buf.getvalue())  # pass bytes directly
+
+
+    def stabilizers_timeslice(self, z: int, d: int):
+        """Build the stabilizers of a given time slice and given distance d."""
+        #filter prism and horizontal pipes of some given time slice
+        current_prisms = []
+        for pos, attrs in self._graph.nodes(data=True):
+            if pos.z == z:
+                prism = attrs[self._NODE_DATA_KEY]
+                current_prisms.append(prism)
+
+        current_pipes = []
+        for pos1, pos2, attrs in self._graph.edges(data=True):
+            if pos1.z == z and pos2.z == z:
+                edge = attrs[self._EDGE_DATA_KEY]
+                if edge.kind.is_spatial:
+                    current_pipes.append(edge)
+
+        #find microscopic centroid for 1st prism (the first prism it the "origin")
+        if current_prisms[0].position.x % 2 == 0:
+            #upwards
+            centroid = Position3DHex(d-1, 0, z)
+        else:
+            #downwards
+            centroid = Position3DHex(d-1, -d-1, z)
+        centroids = [centroid]
+
+        #find for each prism position the microscopic centroid position
+        for prism in current_prisms[1:]:
+            path = current_prisms[0].position.shortest_path_spatial(prism.position)
+            current_centroid = centroid
+            current_macro = current_prisms[0].position
+            for macro_next in path[1:]:
+                #yields next centroid from current centroid and current macro and el
+                current_centroid = current_macro.macro_diff_to_micro_diff(d, current_centroid, macro_next)
+                current_macro = macro_next #overwrite for neighbor consistentcy
+            centroids.append(current_centroid)
+
+        for el in centroids:
+            print(el)
+
+        left_corner_lst = [] #left_corner depends on x even or odd in macro
+        for macro, micro_centroid in zip(current_prisms, centroids):
+            left_corner = micro_centroid
+            if macro.position.x % 2 == 0:
+                for _ in range(d-1):
+                    left_corner = left_corner.shift_standard_direction_minus2()
+            else:
+                for _ in range(d-1):
+                    left_corner = left_corner.shift_standard_direction_minus1()
+            left_corner_lst.append(left_corner)
+
+        for el in left_corner_lst:
+            print(el)
+
+        #place the current_prisms on the microscopic lattice
+        #! ONLY TEMP BECAUSE BOUNDARY REMOVAL DEPENDING ON PIPE
+        stabilizers = []
+        for prism, left_corner in zip(current_prisms, left_corner_lst):
+            #is the prism end of a pipe?
+            pipes_dirs = []
+            for pipe in current_pipes:
+                if prism in (pipe.u, pipe.v):
+                    pipes_dirs.append(pipe.direction_connecting_bdry())  # noqa: PERF401
+            pipes_dirs = [el for el in ["a", "b", "c"] if el not in pipes_dirs] #flip the elements
+            if prism.position.x % 2 == 0:
+                stabilizers += ZXPrism.patch_stabilizers(d, "upwards", left_corner, pipes_dirs)
+            else:
+                stabilizers += ZXPrism.patch_stabilizers(d, "downwards", left_corner, pipes_dirs)
+        #connect the prisms according to current_pipes on the micro lattice
+
+        return stabilizers

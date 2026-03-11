@@ -53,6 +53,30 @@ class PrismPipe:
 
     #!todo add __post_init__
 
+    def direction_connecting_bdry(self) -> str:
+        """Find the triangle direction name of the boundaries connected by this pipe.
+
+        A pipe always connects two triangles along two boundaries of the same direction
+        These directions are `a`, `b` or `c`
+        corresponding to ZXPrism.shift_triangle_direction_a/b/c.
+        """
+        if self.u.position.x % 2 == 0:
+            if self.u.position.x - self.v.position.x == -1 and self.u.position.y - self.v.position.y == -1:
+                return "c"
+            elif self.u.position.x - self.v.position.x == -1 and self.u.position.y - self.v.position.y == 1:
+                return "b"
+            elif self.u.position.x - self.v.position.x == 1 and self.u.position.y - self.v.position.y == -1:
+                return "a"
+            else:
+                raise TQECError("something off")
+        else:  # noqa: PLR5501
+            if self.u.position.x - self.v.position.x == -1 and self.u.position.y - self.v.position.y == 1:
+                return "a"
+            elif self.u.position.x - self.v.position.x == 1 and self.u.position.y - self.v.position.y == -1:
+                return "b"
+            elif self.u.position.x - self.v.position.x == 1 and self.u.position.y - self.v.position.y == 1:
+                return "c"
+
     @staticmethod
     def from_prisms(u: Prism, v: Prism, kind: PrismPipeKind):
         """Create pipe between two given prisms with specific ver/hor basis."""
