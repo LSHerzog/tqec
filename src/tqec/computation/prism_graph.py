@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from networkx import Graph, is_connected
-from tqec.computation.prism import Port, Position3DHex, PrismKind, prism_kind_from_string, Prism, ZXPrism
+from tqec.computation.prism import Port, Position3DHex, PrismKind, BasisPrism, prism_kind_from_string, Prism, ZXPrism
 from tqec.computation.pipe_prism import PrismPipeKind, PrismPipe
 from typing import TYPE_CHECKING, Any, cast
 from tqec.computation.correlation import find_correlation_surfaces
@@ -97,7 +97,7 @@ class PrismGraph:
         return display_collada_model(buf.getvalue())  # pass bytes directly
 
 
-    def stabilizers_timeslice(self, z: int, d: int):
+    def stabilizers_timeslice(self, z: int, d: int) -> tuple[list[list[Position3DHex]], list[list[Position3DHex]]]:
         """Build the stabilizers of a given time slice and given distance d."""
         #filter prism and horizontal pipes of some given time slice
         current_prisms = []
@@ -151,19 +151,118 @@ class PrismGraph:
             print(el)
 
         #place the current_prisms on the microscopic lattice
-        #! ONLY TEMP BECAUSE BOUNDARY REMOVAL DEPENDING ON PIPE
         stabilizers = []
+        prism_bdries = {} #collect all nodes_triangle_bdry for each prism, in same order as current_prisms
+        prism_bdries_filtered = []
         for prism, left_corner in zip(current_prisms, left_corner_lst):
             #is the prism end of a pipe?
             pipes_dirs = []
             for pipe in current_pipes:
                 if prism in (pipe.u, pipe.v):
                     pipes_dirs.append(pipe.direction_connecting_bdry())  # noqa: PERF401
-            pipes_dirs = [el for el in ["a", "b", "c"] if el not in pipes_dirs] #flip the elements
+            pipes_dirs_opp = [el for el in ["a", "b", "c"] if el not in pipes_dirs] #flip the elements
             if prism.position.x % 2 == 0:
-                stabilizers += ZXPrism.patch_stabilizers(d, "upwards", left_corner, pipes_dirs)
+                stabs, nodes_triangle_bdry = ZXPrism.patch_stabilizers(d, "upwards", left_corner, pipes_dirs_opp)
+                print("number of stabs", len(stabs))
             else:
-                stabilizers += ZXPrism.patch_stabilizers(d, "downwards", left_corner, pipes_dirs)
-        #connect the prisms according to current_pipes on the micro lattice
+                stabs, nodes_triangle_bdry = ZXPrism.patch_stabilizers(d, "downwards", left_corner, pipes_dirs_opp)
+                print("number of stabs", len(stabs))
+            stabilizers += stabs
+            #prism_bdries.append(nodes_triangle_bdry)
+            prism_bdries.update({prism.position: nodes_triangle_bdry})
+            prism_bdries_filtered.append({k: nodes_triangle_bdry[k] for k in pipes_dirs})
 
-        return stabilizers
+        #collect weight-2 stabilizers at connecting bdries.
+        all_weight_2_stabs = ZXPrism.find_pairs_with_two_overlaps(stabilizers)
+
+        #generate the weight-3,-5,-6 stabilizers per pipe and store info about which pipe
+        dct_single_type_stabs = {}
+
+        #!TODO also sort the weight 2 stabs here into correct lists.
+
+        for pipe in current_pipes:
+            print("---------pipe-----------", pipe)
+            stabs_list = []
+            bdry_pair_dir = pipe.direction_connecting_bdry()
+            bdry1 = prism_bdries[pipe.u.position][bdry_pair_dir]
+            bdry2 = prism_bdries[pipe.v.position][bdry_pair_dir]
+            #the bdries are built such that they are ordered correctly and can be paired up
+            stab_temp = []
+            for idx in range(len(bdry1)):
+                pos1 = bdry1[idx]
+                pos2 = bdry2[idx]
+                print("pos1, pos2", pos1, pos2)
+                if pos1 not in stab_temp and pos2 not in stab_temp:
+                    stab_temp.append(pos1)
+                    stab_temp.append(pos2)
+                #overlap with any weight 2
+                pos1_neighbor_weight2 = [sublist for sublist in all_weight_2_stabs if any(pos1.is_neighbour(pos) for pos in sublist)]
+                pos2_neighbor_weight2 = [sublist for sublist in all_weight_2_stabs if any(pos2.is_neighbour(pos) for pos in sublist)]
+                pos1neigh, pos2neigh = None, None
+                print("pos1_neighbor_weight2", pos1_neighbor_weight2)
+                print("pos2_neighbor_weight2", pos2_neighbor_weight2)
+                if pos1_neighbor_weight2 and pos2_neighbor_weight2:
+                    assert len(pos1_neighbor_weight2) == 1
+                    for el in pos1_neighbor_weight2[0]:
+                        if pos1.is_neighbour(el):
+                            pos1neigh = el
+                            break
+
+                    assert len(pos2_neighbor_weight2) == 1
+                    for el in pos1_neighbor_weight2[0]:
+                        if pos1.is_neighbour(el):
+                            pos2neigh = el
+                            break
+                flag = False
+                if idx+1 <= len(bdry1)-1 and idx+1 <= len(bdry2)-1:
+                    if pos1.is_neighbour(bdry1[idx+1]) and pos2.is_neighbour(bdry2[idx+1]):
+                        print("case 1 next bdry qubit is neighbor")
+                        if bdry1[idx+1] not in stab_temp and bdry2[idx+1] not in stab_temp:
+                            stab_temp.append(bdry1[idx+1])
+                            stab_temp.append(bdry2[idx+1])
+                        flag = True
+                else:
+                    #last element of the pairs -> add the final stabilizer
+                    stabs_list.append(stab_temp.copy())
+                    break
+                #if pos1_neighbor_weight2 and pos2_neighbor_weight2:
+                if pos1neigh and pos2neigh:
+                    if pos1neigh == pos2neigh:
+                        print("case weight 2 neighbor")
+                        if pos1neigh not in stab_temp:
+                            stab_temp.append(pos1neigh)
+
+                        if pos1_neighbor_weight2[0] not in stabs_list:
+                            stabs_list.append(pos1_neighbor_weight2[0]) #!TODO ADD WEGIHT 2 STABILIZERS TOO
+
+                        if flag is False:
+                            #whenever wight 2 is touched, close stabilizer and start new one.
+                            stabs_list.append(stab_temp.copy())
+                            stab_temp = []
+            dct_single_type_stabs.update({pipe: stabs_list.copy()})
+
+
+
+        #connect the prisms according to current_pipes on the micro lattice -> distinction x, z
+        stabilizers_x = stabilizers.copy()
+        stabilizers_z = stabilizers.copy()
+        #in a connected object, all pipes must be of same kind, but you may have multiple not
+        #not directly connected parts in a timeslice, hence go through each pipe separately
+        for pipe in current_pipes:
+            hor = pipe.kind.hor
+            ver = pipe.kind.ver
+            bdry_pair_dir = pipe.direction_connecting_bdry()
+            if hor == BasisPrism.X and ver == BasisPrism.Z:
+                #hor=X means that init/meas in X basis, thus single type stabilizers at bdry are Z
+                stabilizers_z += dct_single_type_stabs[pipe]
+                pass
+            elif hor == BasisPrism.Z and ver == BasisPrism.X:
+                #hor=Z means that init/meas in Z basis, thus single type stabilizers at bdry are X
+                stabilizers_x += dct_single_type_stabs[pipe]
+                pass
+            elif hor == BasisPrism.N or ver == BasisPrism.N:
+                raise TQECError("Horizontal pipes should not be N")
+            else:
+                raise TQECError("Horizontal pipes have wrong colors for ver,hor.")
+
+        return stabilizers_x, stabilizers_z, all_weight_2_stabs, dct_single_type_stabs

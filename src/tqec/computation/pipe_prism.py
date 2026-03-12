@@ -77,6 +77,13 @@ class PrismPipe:
             elif self.u.position.x - self.v.position.x == 1 and self.u.position.y - self.v.position.y == 1:
                 return "c"
 
+    def single_type_stabilizers_bdry(self, bdry_pair_dir: str):
+        """Generate single type stabilizers along a given bdry.
+
+        This includes weight-6,5,3 operators.
+        """
+        pass
+
     @staticmethod
     def from_prisms(u: Prism, v: Prism, kind: PrismPipeKind):
         """Create pipe between two given prisms with specific ver/hor basis."""

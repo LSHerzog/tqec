@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any
 import numpy as np
 from collections import Counter
+from itertools import combinations
 
 from tqec.utils.exceptions import TQECError
 
@@ -232,7 +233,7 @@ class Position3DHex(Vec3DHex):
         for microscopic positions to find stabilizers.
         This is NOT for macroscopic prism positinos.
         """
-        assert self.z == 0, "for microscopic positions, z=0 is necessary."
+        #assert self.z == 0, "for microscopic positions, z=0 is necessary."
         x = self.x+1
         y = self.y+1
         return Position3DHex(x,y,self.z)
@@ -244,7 +245,7 @@ class Position3DHex(Vec3DHex):
         for microscopic positions to find stabilizers.
         This is NOT for macroscopic prism positinos.
         """
-        assert self.z == 0, "for microscopic positions, z=0 is necessary."
+        #assert self.z == 0, "for microscopic positions, z=0 is necessary."
         if self.x%2==0:
             x = self.x + 3
             y = self.y - 1
@@ -260,7 +261,7 @@ class Position3DHex(Vec3DHex):
         for microscopic positions to find stabilizers.
         This is NOT for macroscopic prism positinos.
         """
-        assert self.z == 0, "for microscopic positions, z=0 is necessary."
+        #assert self.z == 0, "for microscopic positions, z=0 is necessary."
         if self.x%2==0:
             x = self.x - 1
             y = self.y + 3
@@ -523,7 +524,7 @@ class ZXPrism:
         return stabilizers
 
     @staticmethod
-    def patch_stabilizers(d: int, triangle_type: str, left_corner: Position3DHex, reduce_bdry: list[str]) -> list[list[Position3DHex]]:
+    def patch_stabilizers(d: int, triangle_type: str, left_corner: Position3DHex, reduce_bdry: list[str]) -> tuple[list[list[Position3DHex]]]:
         """Create patch stabilizers for a single patch.
 
         Since the stabilizers are self-dual if no merge is performed, this returns a single list
@@ -557,19 +558,43 @@ class ZXPrism:
 
             #fill up sprialing to the center of the triangle
             #either all odd or even nodes
-            even_nodes = [node for node in appear_once_within if node.x % 2 == 0]
-            if len(even_nodes) > 0:
-                for node in even_nodes:
-                    stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
-            else:
-                for node in appear_once_within:
-                    if node.x % 2 != 0:
-                        stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
+            for node in appear_once_within:
+                stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
+            #even_nodes = [node for node in appear_once_within if node.x % 2 == 0]
+            #if len(even_nodes) > 0:
+            #    for node in even_nodes:
+            #        stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
+            #else:
+            #    for node in appear_once_within:
+            #        if node.x % 2 != 0:
+            #            stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
 
-        stabilizers = ZXPrism.remove_duplicate_stabilizers(stabilizers)
+            stabilizers = ZXPrism.remove_duplicate_stabilizers(stabilizers)
+
         stabilizers = ZXPrism.remove_low_overlap_stabilizers(stabilizers, nodes_triangle_bdry, d)
         stabilizers = ZXPrism.reduce_weight_six_to_four(stabilizers, reduce_bdry, nodes_triangle_bdry, d)
-        return stabilizers
+        return stabilizers, nodes_triangle_bdry
+
+    @staticmethod
+    def find_pairs_with_two_overlaps(stabilizers: list[list[Position3DHex]]) -> list[list[Position3DHex]]:
+        """From a list of stabilizers, find the weight-2 overlaps of connected weight-6 operators.
+
+        These form the weight-2 stabilizers between patches in the STDW.
+
+        If not the perfectly right inputs are given here, the function yields nonsense.
+        """
+        six_element_lists = [sublist for sublist in stabilizers if len(sublist) == 6]
+
+        #Find weight-2 overlaps
+        result: list[list[Position3DHex]] = []
+        for list_a, list_b in combinations(six_element_lists, 2):
+            overlapping = [pos for pos in list_a if pos in list_b]
+            if len(overlapping) == 2:
+                counts = [sum(1 for sublist in stabilizers if el in sublist) for el in overlapping]
+                if counts[0] == 2 and counts[1]==2:
+                    result.append(overlapping)
+
+        return result
 
     @staticmethod
     def star_operator_patch(triangle_type: str, nodes_triangle_bdry: dict):
