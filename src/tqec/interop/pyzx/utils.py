@@ -87,7 +87,7 @@ def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[
     if isinstance(kind, Port):
         return VertexType.BOUNDARY, 0
     else:
-        raise NotImplementedError("No further stuff implemented for prisms yet.")
+        raise NotImplementedError(f"type {kind} not implemented yet.")
 
 def cube_kind_to_zx(kind: CubeKind) -> tuple[VertexType, FractionLike]:
     """Convert the cube kind to the corresponding PyZX vertex type and phase.

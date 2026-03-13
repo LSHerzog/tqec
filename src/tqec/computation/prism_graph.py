@@ -96,23 +96,8 @@ class PrismGraph:
         write_prism_graph_to_dae_file(self, buf, spacing = 3.0)
         return display_collada_model(buf.getvalue())  # pass bytes directly
 
-
-    def stabilizers_timeslice(self, z: int, d: int) -> tuple[list[list[Position3DHex]], list[list[Position3DHex]]]:
-        """Build the stabilizers of a given time slice and given distance d."""
-        #filter prism and horizontal pipes of some given time slice
-        current_prisms = []
-        for pos, attrs in self._graph.nodes(data=True):
-            if pos.z == z:
-                prism = attrs[self._NODE_DATA_KEY]
-                current_prisms.append(prism)
-
-        current_pipes = []
-        for pos1, pos2, attrs in self._graph.edges(data=True):
-            if pos1.z == z and pos2.z == z:
-                edge = attrs[self._EDGE_DATA_KEY]
-                if edge.kind.is_spatial:
-                    current_pipes.append(edge)
-
+    def corners_timeslice(self, z: int, d: int, current_prisms):
+        """Find the corners to build stabilizers from them for current timeslice."""
         #find microscopic centroid for 1st prism (the first prism it the "origin")
         if current_prisms[0].position.x % 2 == 0:
             #upwards
@@ -133,9 +118,6 @@ class PrismGraph:
                 current_macro = macro_next #overwrite for neighbor consistentcy
             centroids.append(current_centroid)
 
-        for el in centroids:
-            print(el)
-
         left_corner_lst = [] #left_corner depends on x even or odd in macro
         for macro, micro_centroid in zip(current_prisms, centroids):
             left_corner = micro_centroid
@@ -147,10 +129,147 @@ class PrismGraph:
                     left_corner = left_corner.shift_standard_direction_minus1()
             left_corner_lst.append(left_corner)
 
-        for el in left_corner_lst:
-            print(el)
+        return left_corner_lst
+
+    @staticmethod
+    def split_into_connected_components(
+        positions: list[Position3DHex],
+    ) -> list[list[Position3DHex]]:
+        """Split positions into sublists where elements are connected via neighbour or next-nearest-neighbour."""
+        # each position starts in its own component
+        parent = {pos: pos for pos in positions}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]  # path compression
+                x = parent[x]
+            return x
+
+        def union(x, y):
+            parent[find(x)] = find(y)
+
+        for i, pos1 in enumerate(positions):
+            for pos2 in positions[i+1:]:
+                if pos1.is_neighbour(pos2) or pos1.is_next_nearest_neighbour(pos2):
+                    union(pos1, pos2)
+
+        # group by root
+        components: dict[Position3DHex, list[Position3DHex]] = {}
+        for pos in positions:
+            root = find(pos)
+            components.setdefault(root, []).append(pos)
+
+        return list(components.values())
+
+    def star_operator_timeslice(self, z:int, d:int):
+        """Generate the star operator for a time slice."""
+        #current timeslice
+        current_prisms = []
+        for pos, attrs in self._graph.nodes(data=True):
+            if pos.z == z:
+                prism = attrs[self._NODE_DATA_KEY]
+                current_prisms.append(prism)
+
+        current_pipes = []
+        for pos1, pos2, attrs in self._graph.edges(data=True):
+            if pos1.z == z and pos2.z == z:
+                edge = attrs[self._EDGE_DATA_KEY]
+                if edge.kind.is_spatial:
+                    current_pipes.append(edge)
+
+        left_corner_lst = self.corners_timeslice(z, d, [current_prisms[0]]) #only 1 left corner necessary at this point
+
+        #generate initial star operator
+        init_prism = current_prisms[0]
+        if init_prism.position.x % 2 == 0:
+            triangle_type = "upwards"
+        else:
+            triangle_type = "downwards"
+
+        nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner_lst[0], triangle_type)
+        star_op_init = ZXPrism.star_operator_patch(triangle_type, nodes_triangle_bdry)
+        star_op_final = star_op_init.copy()
+
+        #need to map star op to prisms and hence pipes for X/Z assignment later
+        prism_to_star_op: dict[Position3DHex, list[Position3DHex]] = {
+                init_prism.position: star_op_init.copy()
+            }
+
+        #find path to any other patch with finding the macro path.
+        for prism in current_prisms[1:]:
+            path = init_prism.position.shortest_path_spatial(prism.position)
+            #translate to prisms to have no type mismatch, but random prism generation here
+            path_prisms = [Prism(pos, ZXPrism(BasisPrism.N, BasisPrism.N), "") for pos in path]
+            left_corner_lst_tmp = self.corners_timeslice(z, d, path_prisms)
+
+            #go through each macro path and reflect consecutively until destination patch reached
+            #this yields some repetetive computations but not too bad i think.
+            star_op_tmp = star_op_init.copy()
+            for idx, (pos, corner) in enumerate(zip(path, left_corner_lst_tmp)):
+                if pos.x % 2 == 0:
+                    triangle_type = "upwards"
+                else:
+                    triangle_type = "downwards"
+                nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, corner, triangle_type)
+                #find direction by creating dummy pipe
+                if idx+1 < len(path):
+                    pipe = PrismPipe(path_prisms[idx], path_prisms[idx+1], PrismPipeKind(hor = BasisPrism.N, ver = BasisPrism.N))
+                    direction = pipe.direction_connecting_bdry()
+                    star_op_tmp = ZXPrism.reflect_star_operator(star_op_tmp, direction, triangle_type, nodes_triangle_bdry)
+                else:
+                    #if last element reached, we have our star op and add
+                    star_op_final += star_op_tmp.copy()
+                    prism_to_star_op[prism.position] = star_op_tmp.copy()
+
+        # assign X or Z via pipes: find any pipe connected to this prism and read its kind
+        def get_basis_from_pipes(prism_pos: Position3DHex) -> str:
+            for pipe in current_pipes:
+                if prism_pos in (pipe.u.position, pipe.v.position):
+                    if pipe.kind.hor == BasisPrism.X and pipe.kind.ver == BasisPrism.Z:
+                        return "X"
+                    elif pipe.kind.hor == BasisPrism.Z and pipe.kind.ver == BasisPrism.X:
+                        return "Z"
+            return "X"  # fallback for isolated prisms with no pipes
+
+
+        #depending on the pipe ver/hor, decide whether the star operator is an x or z logical
+        partitioned_star_ops = PrismGraph.split_into_connected_components(star_op_final)
+        star_ops_x = []
+        star_ops_z = []
+        for component in partitioned_star_ops:
+            component_set = set(component)
+            basis = "X"  # fallback
+            for prism_pos, star_op in prism_to_star_op.items():
+                if component_set & set(star_op):
+                    basis = get_basis_from_pipes(prism_pos)
+                    break
+            if basis == "X":
+                star_ops_x.append(component)
+            else:
+                star_ops_z.append(component)
+
+        return star_ops_x, star_ops_z
+
+    def stabilizers_timeslice(self, z: int, d: int) -> tuple[list[list[Position3DHex]], list[list[Position3DHex]]]:
+        """Build the stabilizers of a given time slice and given distance d."""
+        #filter prism and horizontal pipes of some given time slice
+        current_prisms = []
+        for pos, attrs in self._graph.nodes(data=True):
+            if pos.z == z:
+                prism = attrs[self._NODE_DATA_KEY]
+                current_prisms.append(prism)
+
+        current_pipes = []
+        for pos1, pos2, attrs in self._graph.edges(data=True):
+            if pos1.z == z and pos2.z == z:
+                edge = attrs[self._EDGE_DATA_KEY]
+                if edge.kind.is_spatial:
+                    current_pipes.append(edge)
+
+        left_corner_lst = self.corners_timeslice(z, d, current_prisms)
 
         #place the current_prisms on the microscopic lattice
+        #!TODO make this more efficient and avoid repeated calls of patch_stabilizers, cache the objects and translate them.
         stabilizers = []
         prism_bdries = {} #collect all nodes_triangle_bdry for each prism, in same order as current_prisms
         prism_bdries_filtered = []
@@ -163,10 +282,8 @@ class PrismGraph:
             pipes_dirs_opp = [el for el in ["a", "b", "c"] if el not in pipes_dirs] #flip the elements
             if prism.position.x % 2 == 0:
                 stabs, nodes_triangle_bdry = ZXPrism.patch_stabilizers(d, "upwards", left_corner, pipes_dirs_opp)
-                print("number of stabs", len(stabs))
             else:
                 stabs, nodes_triangle_bdry = ZXPrism.patch_stabilizers(d, "downwards", left_corner, pipes_dirs_opp)
-                print("number of stabs", len(stabs))
             stabilizers += stabs
             #prism_bdries.append(nodes_triangle_bdry)
             prism_bdries.update({prism.position: nodes_triangle_bdry})
@@ -181,7 +298,6 @@ class PrismGraph:
         #!TODO also sort the weight 2 stabs here into correct lists.
 
         for pipe in current_pipes:
-            print("---------pipe-----------", pipe)
             stabs_list = []
             bdry_pair_dir = pipe.direction_connecting_bdry()
             bdry1 = prism_bdries[pipe.u.position][bdry_pair_dir]
@@ -191,7 +307,6 @@ class PrismGraph:
             for idx in range(len(bdry1)):
                 pos1 = bdry1[idx]
                 pos2 = bdry2[idx]
-                print("pos1, pos2", pos1, pos2)
                 if pos1 not in stab_temp and pos2 not in stab_temp:
                     stab_temp.append(pos1)
                     stab_temp.append(pos2)
@@ -199,8 +314,6 @@ class PrismGraph:
                 pos1_neighbor_weight2 = [sublist for sublist in all_weight_2_stabs if any(pos1.is_neighbour(pos) for pos in sublist)]
                 pos2_neighbor_weight2 = [sublist for sublist in all_weight_2_stabs if any(pos2.is_neighbour(pos) for pos in sublist)]
                 pos1neigh, pos2neigh = None, None
-                print("pos1_neighbor_weight2", pos1_neighbor_weight2)
-                print("pos2_neighbor_weight2", pos2_neighbor_weight2)
                 if pos1_neighbor_weight2 and pos2_neighbor_weight2:
                     assert len(pos1_neighbor_weight2) == 1
                     for el in pos1_neighbor_weight2[0]:
@@ -216,19 +329,18 @@ class PrismGraph:
                 flag = False
                 if idx+1 <= len(bdry1)-1 and idx+1 <= len(bdry2)-1:
                     if pos1.is_neighbour(bdry1[idx+1]) and pos2.is_neighbour(bdry2[idx+1]):
-                        print("case 1 next bdry qubit is neighbor")
                         if bdry1[idx+1] not in stab_temp and bdry2[idx+1] not in stab_temp:
                             stab_temp.append(bdry1[idx+1])
                             stab_temp.append(bdry2[idx+1])
                         flag = True
                 else:
                     #last element of the pairs -> add the final stabilizer
+                    stab_temp = ZXPrism.order_stabilizer(stab_temp)
                     stabs_list.append(stab_temp.copy())
                     break
                 #if pos1_neighbor_weight2 and pos2_neighbor_weight2:
                 if pos1neigh and pos2neigh:
                     if pos1neigh == pos2neigh:
-                        print("case weight 2 neighbor")
                         if pos1neigh not in stab_temp:
                             stab_temp.append(pos1neigh)
 
@@ -237,6 +349,7 @@ class PrismGraph:
 
                         if flag is False:
                             #whenever wight 2 is touched, close stabilizer and start new one.
+                            stab_temp = ZXPrism.order_stabilizer(stab_temp)
                             stabs_list.append(stab_temp.copy())
                             stab_temp = []
             dct_single_type_stabs.update({pipe: stabs_list.copy()})
@@ -260,7 +373,7 @@ class PrismGraph:
                 #hor=Z means that init/meas in Z basis, thus single type stabilizers at bdry are X
                 stabilizers_x += dct_single_type_stabs[pipe]
                 pass
-            elif hor == BasisPrism.N or ver == BasisPrism.N:
+            elif BasisPrism.N in (hor, ver):
                 raise TQECError("Horizontal pipes should not be N")
             else:
                 raise TQECError("Horizontal pipes have wrong colors for ver,hor.")

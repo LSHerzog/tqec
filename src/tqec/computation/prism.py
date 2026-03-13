@@ -24,8 +24,6 @@ class Position3DHex(Vec3DHex):
     y: int
     z: int
 
-    #!todo add methods like shift_by, shift_in_direction, is_neighbor etc.
-
     def distance_spatial(self, other: Position3DHex) -> int:
         """Determine distance between two positions."""
         if self.y % 2 == 0:
@@ -49,6 +47,10 @@ class Position3DHex(Vec3DHex):
             return [Position3DHex(self.x-1, self.y-1, self.z),
                     Position3DHex(self.x-1, self.y+1, self.z),
                     Position3DHex(self.x+1, self.y-1, self.z)]
+
+    def is_next_nearest_neighbour(self, other: Position3DHex) -> bool:
+        """Check whether two points are next-nearest neighbours in the triangular lattice."""
+        return bool(set(self.neighbors_spatial()) & set(other.neighbors_spatial()))
 
     def shortest_path_spatial(self, other: Position3DHex) -> list[Position3DHex]:
         """Find shortest Path between two points."""
@@ -557,23 +559,43 @@ class ZXPrism:
                 break
 
             #fill up sprialing to the center of the triangle
-            #either all odd or even nodes
             for node in appear_once_within:
                 stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
-            #even_nodes = [node for node in appear_once_within if node.x % 2 == 0]
-            #if len(even_nodes) > 0:
-            #    for node in even_nodes:
-            #        stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
-            #else:
-            #    for node in appear_once_within:
-            #        if node.x % 2 != 0:
-            #            stabilizers += ZXPrism.patch_adjacent_bulk_stabilizers(node)
 
             stabilizers = ZXPrism.remove_duplicate_stabilizers(stabilizers)
 
         stabilizers = ZXPrism.remove_low_overlap_stabilizers(stabilizers, nodes_triangle_bdry, d)
         stabilizers = ZXPrism.reduce_weight_six_to_four(stabilizers, reduce_bdry, nodes_triangle_bdry, d)
+
+        if len(stabilizers) !=  (3*(d**2-1))/8:
+            raise TQECError("Internal issue with patch stabilizer construction.")
+
         return stabilizers, nodes_triangle_bdry
+
+    @staticmethod
+    def order_stabilizer(stabilizer: list[Position3DHex]):
+        """Order a stabilizer such that adjacent data qubit positions appear subsequently."""
+        if len(stabilizer) <= 2:
+            return stabilizer
+
+        # Start from an endpoint (only one neighbour in the set), or fall back to first element
+        start = next(
+            (pos for pos in stabilizer if sum(1 for other in stabilizer if pos.is_neighbour(other)) == 1),
+            stabilizer[0]
+        )
+
+        ordered = [start]
+        while len(ordered) < len(stabilizer):
+            next_pos = next(
+                (pos for pos in stabilizer if pos not in ordered and ordered[-1].is_neighbour(pos)),
+                None
+            )
+            if next_pos is None:
+                break
+            ordered.append(next_pos)
+
+        return ordered
+
 
     @staticmethod
     def find_pairs_with_two_overlaps(stabilizers: list[list[Position3DHex]]) -> list[list[Position3DHex]]:
@@ -675,7 +697,58 @@ class ZXPrism:
 
         raise TQECError("No intersection point found for star operator.")
 
+    @staticmethod
+    def reflect_node(node: Position3DHex, direction: str, triangle_type: str, nodes_triangle_bdry: dict):
+        """Reflect a node along a given axis."""
+        if direction not in ("a", "b", "c") or triangle_type not in ("upwards", "downwards"):
+            raise TQECError("incorrect string input(s).")
 
+        d = len(nodes_triangle_bdry["a"]) #all have the same length thsu just choose a randomly.
+
+        reflect_shift = {
+            ("upwards",   "a"): "shift_standard_direction_minus3",
+            ("upwards",   "b"): "shift_standard_direction_minus1",
+            ("upwards",   "c"): "shift_standard_direction_plus2",
+            ("downwards", "a"): "shift_standard_direction_plus3",
+            ("downwards", "b"): "shift_standard_direction_plus1",
+            ("downwards", "c"): "shift_standard_direction_minus2",
+        }
+
+        def get_reflection_shift(el: Position3DHex, direction: str, triangle_type: str) -> Position3DHex:
+            method_name = reflect_shift[(triangle_type, direction)]
+            return getattr(el, method_name)()
+
+        #find the nodes on the reflection axis
+        nodes_reflection_axis = [
+            get_reflection_shift(el, direction, triangle_type)
+            for el in nodes_triangle_bdry[direction]
+        ]
+
+        #go from node to corresponding element in reflection axis and count steps
+        #go the same number of steps in same direction -> result: reflected node
+        current = node
+        for steps in range(1, d + 1):
+            current = get_reflection_shift(current, direction, triangle_type)
+            if current in nodes_reflection_axis:
+                break
+
+        #go "steps" many steps further in that direction
+        for _ in range(steps):
+            current = get_reflection_shift(current, direction, triangle_type)
+
+        return current
+
+    @staticmethod
+    def reflect_star_operator(star_op: list[Position3DHex], direction: str, triangle_type: str, nodes_triangle_bdry: dict):
+        """Reflect the star operator along the given direction.
+
+        Note that triangle_type and nodes_triangle_bdry must fit to the current star op, otherwise the result wirll be nonsense.
+        """
+        star_op_reflected = [
+            ZXPrism.reflect_node(el, direction, triangle_type, nodes_triangle_bdry)
+            for el in star_op
+        ]
+        return star_op_reflected
 
 class Port:
     """Prism kind representing the open ports in the block graph.
