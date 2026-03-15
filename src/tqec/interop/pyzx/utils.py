@@ -58,7 +58,7 @@ def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[
             raise TQECError("We do not consider sole prisms for zx diagrams.")
 
         if len(neighbor_pipes_spatial) == 0 and len(neighbor_pipes_temporal) >= 2:
-            #! TEMPORARY, if no spatial pipe, then just choose some color, but more detailed rules apply here.
+            #! TEMPORARY, if no spatial pipe, then just choose some color, as it is an identity - but empty would be best
             return VertexType.Z, 0
         elif len(neighbor_pipes_spatial) == 0 and len(neighbor_pipes_temporal) == 1:
             #this is a boundary prism, i.e. determine the node color depending on its prep or meas face
@@ -66,6 +66,8 @@ def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[
                 return VertexType.Z, 0
             if kind.meas is BasisPrism.Z or kind.prep is BasisPrism.Z: #other possibilities already ruled out in construction of PipeGraph
                 return VertexType.X, 0
+            else:
+                return VertexType.BOUNDARY, 0
 
         #remove the BasisPrism.N entries since they do not lead to inconsistency
         list_ver = [el for el in list_ver if el is not BasisPrism.N]
@@ -76,12 +78,15 @@ def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[
         if len(set(list_hor)) > 1:
             raise TQECError("Inconsistent `hor` values of pipes entering the same prism.")
 
-        if list_hor[0] == BasisPrism.X and list_ver[0] == BasisPrism.Z:
-            return VertexType.Z, 0
-        elif list_hor[0] == BasisPrism.Z and list_ver[0] == BasisPrism.X:
-            return VertexType.X, 0
-        else:
-            raise TQECError("Invalid Pipe Configuration.")
+        if len(set(list_ver))> 0 and len(set(list_hor))>0:
+            if list_hor[0] == BasisPrism.X and list_ver[0] == BasisPrism.Z:
+                return VertexType.Z, 0
+            elif list_hor[0] == BasisPrism.Z and list_ver[0] == BasisPrism.X:
+                return VertexType.X, 0
+            else:
+                raise TQECError("Invalid Pipe Configuration.")
+        else: #if meas/prep not handled above then boundary.
+            return VertexType.BOUNDARY, 0
     #import here to avoid overlapping Port imports for block and prism
     from tqec.computation.prism import Port  # noqa: PLC0415
     if isinstance(kind, Port):

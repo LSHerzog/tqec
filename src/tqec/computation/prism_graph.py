@@ -229,7 +229,7 @@ class PrismGraph:
                         return "X"
                     elif pipe.kind.hor == BasisPrism.Z and pipe.kind.ver == BasisPrism.X:
                         return "Z"
-            return "X"  # fallback for isolated prisms with no pipes
+            return "XZ"  # fallback for isolated prisms with no pipes, for them it's both X and Z
 
 
         #depending on the pipe ver/hor, decide whether the star operator is an x or z logical
@@ -238,14 +238,16 @@ class PrismGraph:
         star_ops_z = []
         for component in partitioned_star_ops:
             component_set = set(component)
-            basis = "X"  # fallback
             for prism_pos, star_op in prism_to_star_op.items():
                 if component_set & set(star_op):
                     basis = get_basis_from_pipes(prism_pos)
                     break
             if basis == "X":
                 star_ops_x.append(component)
-            else:
+            elif basis == "Z":
+                star_ops_z.append(component)
+            elif basis == "XZ":
+                star_ops_x.append(component)
                 star_ops_z.append(component)
 
         return star_ops_x, star_ops_z
