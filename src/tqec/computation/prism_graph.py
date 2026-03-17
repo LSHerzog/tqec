@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from networkx import Graph, is_connected
+import networkx as nx
 from tqec.computation.prism import Port, Position3DHex, PrismKind, BasisPrism, prism_kind_from_string, Prism, ZXPrism
 from tqec.computation.pipe_prism import PrismPipeKind, PrismPipe
 from typing import TYPE_CHECKING, Any, cast
@@ -186,6 +187,8 @@ class PrismGraph:
         else:
             triangle_type = "downwards"
 
+        #!TODO create a star_op_init which is stored in self and reused once star operator timeslice was called once
+        #!TODO this should make the star operators consistent among all slices.
         nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner_lst[0], triangle_type)
         star_op_init = ZXPrism.star_operator_patch(triangle_type, nodes_triangle_bdry)
         star_op_final = star_op_init.copy()
@@ -275,6 +278,7 @@ class PrismGraph:
         stabilizers = []
         prism_bdries = {} #collect all nodes_triangle_bdry for each prism, in same order as current_prisms
         prism_bdries_filtered = []
+        dct_patch_stabilizers = {}
         for prism, left_corner in zip(current_prisms, left_corner_lst):
             #is the prism end of a pipe?
             pipes_dirs = []
@@ -287,6 +291,7 @@ class PrismGraph:
             else:
                 stabs, nodes_triangle_bdry = ZXPrism.patch_stabilizers(d, "downwards", left_corner, pipes_dirs_opp)
             stabilizers += stabs
+            dct_patch_stabilizers.update({prism: stabs})
             #prism_bdries.append(nodes_triangle_bdry)
             prism_bdries.update({prism.position: nodes_triangle_bdry})
             prism_bdries_filtered.append({k: nodes_triangle_bdry[k] for k in pipes_dirs})
@@ -380,4 +385,266 @@ class PrismGraph:
             else:
                 raise TQECError("Horizontal pipes have wrong colors for ver,hor.")
 
-        return stabilizers_x, stabilizers_z, all_weight_2_stabs, dct_single_type_stabs
+        return stabilizers_x, stabilizers_z, all_weight_2_stabs, dct_single_type_stabs, dct_patch_stabilizers
+
+    @staticmethod
+    def find_origin_vertex_stab(stabilizer: list[Position3DHex]) -> Position3DHex:
+        r"""Define an origin vertex for each weight-6 stabilizer.
+
+          o
+        /   \
+        x    o
+        |    |
+        o    o
+        \    /
+           o
+        the x defines the origin vertex we define. the vertical axis is direction C.
+        """
+        if len(stabilizer)!=6:
+            raise ValueError("`find_origin_vertex_stab` only works for weight 6 stabilizers.")
+        for idx, vertex in enumerate(stabilizer):
+            neigh1 = stabilizer[(idx-1)%len(stabilizer)]
+            neigh2 = stabilizer[(idx+1)%len(stabilizer)]
+            if vertex.x - neigh1.x == -1 and vertex.y - neigh1.y == -1 and vertex.x - neigh2.x == -1 and vertex.y - neigh2.y == 1:
+                return vertex
+            elif vertex.x - neigh2.x == -1 and vertex.y - neigh2.y == -1 and vertex.x - neigh1.x == -1 and vertex.y - neigh1.y == 1:
+                return vertex
+        raise TQECError("`origin vertex` could not be found in given plaquette.")
+
+    @staticmethod
+    def find_three_coloring_stabilizers(stabilizers: list[list[Position3DHex]]) -> dict:
+        """Find an assignment of rgb colors to the stabilizers.
+
+        Exclude weight-2 stabilizers for this consideration.
+        Uses the fact that origin vertices of weight-6 stabilizers form a 
+        hexagonal lattice, which is 3-colorable by coordinate parity.
+        """
+        weight6 = [stab for stab in stabilizers if len(stab) == 6]
+        if not weight6:
+            raise TQECError("No weight-6 stabilizer found to seed the 3-coloring.")
+        others = [stab for stab in stabilizers if len(stab) != 6 and len(stab)!= 2]
+
+        COLORS = ["red", "green", "blue"]
+        assignment = {}
+
+        # Get the origin vertex of the seed stabilizer
+        seed_stab = weight6[0]
+        seed_origin = PrismGraph.find_origin_vertex_stab(seed_stab)
+
+        for stab in weight6:
+            origin = PrismGraph.find_origin_vertex_stab(stab)
+            dx = origin.x - seed_origin.x
+            dy = origin.y - seed_origin.y
+            color_index = ((dx - dy) // 2) % 3
+            assignment[tuple(stab)] = COLORS[color_index]
+
+        #remaining stabilizers: weight 3 and weight 5 and weight 4
+        # check what the neighboring weight-6 colors are and take the non appearing color.
+
+        #for other_stab in others:
+        #    other_vertices = set(other_stab)
+        #    neighboring_colors = set()
+        #    for stab in weight6:
+        #        if set(stab) & other_vertices:
+        #            neighboring_colors.add(assignment[tuple(stab)])
+        #    remaining = [c for c in COLORS if c not in neighboring_colors]
+        #    assignment[tuple(other_stab)] = remaining[0]
+        unassigned = list(others)
+        while unassigned:
+            still_unassigned = []
+            for other_stab in unassigned:
+                other_vertices = set(other_stab)
+                neighboring_colors = set()
+                for stab in weight6:
+                    if set(stab) & other_vertices:
+                        neighboring_colors.add(assignment[tuple(stab)])
+                for stab in others:
+                    key = tuple(stab)
+                    if key in assignment and set(stab) & other_vertices:
+                        neighboring_colors.add(assignment[key])
+                remaining = [c for c in COLORS if c not in neighboring_colors]
+                if len(remaining) == 1:
+                    assignment[tuple(other_stab)] = remaining[0]
+                else:
+                    still_unassigned.append(other_stab)
+            if len(still_unassigned) == len(unassigned):
+                raise TQECError("Could not resolve coloring — stuck with ambiguous boundary stabilizers.")
+            unassigned = still_unassigned
+
+        return assignment
+
+    def find_all_linear_paths_timeslice(self, z: int) -> list[list[PrismPipe]]:
+        """Find all simple linear paths through the prism graph.
+
+        This is needed to find all possible horizontal correlation surfaces of a slice.
+        """
+        # Find all nodes that are endpoints (degree 1) or isolated (degree 0)
+        # Paths must start and end at such nodes
+        endpoints = [n for n, deg in self._graph.degree() if deg == 1 and n.z == z]
+
+        # If no endpoints exist (e.g. pure cycle), fall back to all nodes
+        if not endpoints:
+            endpoints = list(self._graph.nodes())
+
+        all_paths: list[list[PrismPipe]] = []
+
+        for source in endpoints:
+            for target in endpoints:
+                if source >= target:  # avoid duplicates and self-paths
+                    continue
+                for node_path in nx.all_simple_paths(self._graph, source, target):
+                    all_paths.append(node_path)
+                    break #only one node path (more will not be possible anyways)
+        return all_paths
+
+    @staticmethod
+    def find_boundary_stabilizers(
+        dct_patch_stabilizers: dict[Prism, list[list[Position3DHex]]],
+        pos_a: Position3DHex,
+        pos_b: Position3DHex,
+        dct_single_type_stabs: dict[PrismPipe, list[list[Position3DHex]]],
+    ) -> list[list[Position3DHex]]:
+        """Find stabilizers at the boundary between pos_a and pos_b.
+
+        Restricts to only the pipe connecting pos_a and pos_b directly.
+
+        Args:
+            dct_patch_stabilizers: mapping from prism to its list of stabilizers.
+            pos_a: position of the first prism.
+            pos_b: position of the second prism.
+            dct_single_type_stabs: mapping from pipe to its boundary stabilizers.
+
+        Returns:
+            The stabilizers from the pipe between pos_a and pos_b that share
+            at least one vertex with pos_a's patch.
+        """
+        stabs_a = next((stabs for prism, stabs in dct_patch_stabilizers.items() if prism.position == pos_a), None)
+        if stabs_a is None:
+            raise TQECError(f"No patch found for position {pos_a}.")
+
+        vertices_a = set(v for stab in stabs_a for v in stab)
+
+        # restrict to only the pipe directly connecting pos_a and pos_b
+        connecting_pipe_stabs = [
+            stab
+            for pipe, stabs in dct_single_type_stabs.items()
+            if {pipe.u.position, pipe.v.position} == {pos_a, pos_b}
+            for stab in stabs
+            if set(stab) & vertices_a
+        ]
+        return connecting_pipe_stabs
+
+    @staticmethod
+    def count_stabilizer_appearances(
+        position: Position3DHex,
+        stabilizers: list[list[Position3DHex]],
+    ) -> int:
+        """Count how many stabilizers touch the given position."""
+        return sum(1 for stab in stabilizers if position in stab)
+
+    def stabilizer_product_timeslice(self, z: int, dct_single_type_stabs, dct_patch_stabilizers):
+        """Construct the logical operator corresponding to a horizonatl correlation surface.
+
+        this means that we look for a stabilizer product that transports a logical
+        from one to another place spatially.
+
+        This requires the stabilizers from `stabilizers_timeslice` as input.
+
+        There are always different possibilities to go through a pipe diagram.
+        This method generates all possible stabilizer products.
+        """
+        all_paths = self.find_all_linear_paths_timeslice(z = z)
+        all_paths_stabilizer_product = []
+        x_or_z = [] #list of strings for all_paths_stabilizer_product that determins whether X or Z stabilizer product depending on pipe type.
+
+        #3coloring of full stabilizers whatever the z or x kind, this is specified later
+        assignment = self.find_three_coloring_stabilizers(
+            [stab for stabs in dct_single_type_stabs.values() for stab in stabs]
+            + [stab for stabs in dct_patch_stabilizers.values() for stab in stabs]
+        )
+
+        for path in all_paths:
+            stabilizer_product = []
+
+            for idx, prism_pos in enumerate(path[1:-1], start=1):
+                # find boundary stabilizers between previous and current prism
+                boundary_left = self.find_boundary_stabilizers(
+                    dct_patch_stabilizers, prism_pos, path[idx-1], dct_single_type_stabs)
+                boundary_right = self.find_boundary_stabilizers(
+                    dct_patch_stabilizers, prism_pos, path[idx+1], dct_single_type_stabs)
+
+                stabilizer_product += [el for el in boundary_left if len(el)!=2] #add the boundary operators too
+                if idx == len(path)-2:
+                    stabilizer_product += [el for el in boundary_right if len(el)!=2]
+
+                # determine color of left boundary
+                color_left = None
+                for stab in boundary_left:
+                    if len(stab) != 2:
+                        stab_set = set(stab)
+                        for key, color in assignment.items():
+                            if set(key) == stab_set:
+                                color_left = color
+                                break
+                    if color_left is not None:
+                        break
+
+                # determine color of right boundary
+                color_right = None
+                for stab in boundary_right:
+                    if len(stab) != 2:
+                        stab_set = set(stab)
+                        for key, color in assignment.items():
+                            if set(key) == stab_set:
+                                color_right = color
+                                break
+                    if color_right is not None:
+                        break
+
+                # add all stabilizers of this prism with matching colors
+                prism_stabilizers = next(
+                    stabs for prism, stabs in dct_patch_stabilizers.items()
+                    if prism.position == prism_pos
+                )
+                for stab in prism_stabilizers:
+                    stab_set = set(stab)
+                    for key, color in assignment.items():
+                        if set(key) == stab_set:
+                            if color in (color_left, color_right):
+                                stabilizer_product.append(stab)
+                            break
+
+                #determine which weight-2 operators are needed
+                if idx != len(path)-1 and idx!=1: #not at the bdry of the path
+                    weight_2_stabs = [el for el in boundary_left if len(el)==2]
+                    #go through the weight 2 stabilizers, at each data qubit,
+                    #at each data qubit, check how many data qubits are touched by a stabilizer in the product
+                    #add the weight 2 stabilizer to the product if odd number of stabilizer touch the qubit.
+                    for stab in weight_2_stabs:
+                        bool_lst = [] #bool for each data qubit, True if odd, False if even
+                        for qubit in stab:
+                            touches = self.count_stabilizer_appearances(qubit, stabilizer_product)
+                            if touches%2==0:
+                                bool_lst.append(False)
+                            else:
+                                bool_lst.append(True)
+                        if any(bool_lst) and not all(bool_lst):
+                            raise TQECError("Expected all True or all False, got a mix.")
+                        if all(bool_lst):
+                            stabilizer_product.append(stab)
+
+            #check those weight-6 stabilizers that have qubits that are not touched
+            #these are placed along STDWs not part of the current path
+            #to make them trivial, add the respective weight-2 stabilizer
+            weight6_in_product = [stab for stab in stabilizer_product if len(stab) == 6]
+            for stab in weight6_in_product:
+                once_touched = [
+                    qubit for qubit in stab
+                    if self.count_stabilizer_appearances(qubit, stabilizer_product) == 1
+                ]
+                if len(once_touched) == 2:
+                    stabilizer_product.append(once_touched)
+
+            all_paths_stabilizer_product.append(stabilizer_product.copy())
+
+        return assignment, all_paths_stabilizer_product #assignment is order dependent, so please return the specific assignment which is in general not unique
