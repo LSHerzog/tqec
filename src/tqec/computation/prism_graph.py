@@ -25,6 +25,7 @@ class PrismGraph:
         self._name = name
         self._graph: Graph[Position3DHex] = Graph()
         self._ports: dict[str, Position3DHex] = {}
+        self.seed_star_op: dict[int, tuple] = {}
 
     @property
     def prisms(self) -> list[Prism]:
@@ -178,19 +179,35 @@ class PrismGraph:
                 if edge.kind.is_spatial:
                     current_pipes.append(edge)
 
-        left_corner_lst = self.corners_timeslice(z, d, [current_prisms[0]]) #only 1 left corner necessary at this point
 
-        #generate initial star operator
-        init_prism = current_prisms[0]
-        if init_prism.position.x % 2 == 0:
-            triangle_type = "upwards"
+        if d in self.seed_star_op: #load an already generated seed
+            cached_star_op, cached_prism = self.seed_star_op[d]
+            # Remap micro-positions to current z
+            star_op_init = [
+                Position3DHex(p.x, p.y, z) for p in cached_star_op
+            ]
+            cached_prism = self.seed_star_op[d][1]
+            # update z to current timeslice
+            init_prism = Prism(
+                Position3DHex(cached_prism.position.x, cached_prism.position.y, z),
+                cached_prism.kind,
+                cached_prism.label,
+            )
+
         else:
-            triangle_type = "downwards"
+            #generate initial star operator
+            init_prism = current_prisms[0]
+            if init_prism.position.x % 2 == 0:
+                triangle_type = "upwards"
+            else:
+                triangle_type = "downwards"
 
-        #!TODO create a star_op_init which is stored in self and reused once star operator timeslice was called once
-        #!TODO this should make the star operators consistent among all slices.
-        nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner_lst[0], triangle_type)
-        star_op_init = ZXPrism.star_operator_patch(triangle_type, nodes_triangle_bdry)
+            left_corner_lst = self.corners_timeslice(z, d, [current_prisms[0]]) #only 1 left corner necessary at this point
+
+            nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner_lst[0], triangle_type)
+            star_op_init = ZXPrism.star_operator_patch(triangle_type, nodes_triangle_bdry)
+            self.seed_star_op[d] = (star_op_init.copy(), init_prism)
+
         star_op_final = star_op_init.copy()
 
         #need to map star op to prisms and hence pipes for X/Z assignment later
@@ -199,7 +216,7 @@ class PrismGraph:
             }
 
         #find path to any other patch with finding the macro path.
-        for prism in current_prisms[1:]:
+        for prism in [p for p in current_prisms if p != init_prism]:
             path = init_prism.position.shortest_path_spatial(prism.position)
             #translate to prisms to have no type mismatch, but random prism generation here
             path_prisms = [Prism(pos, ZXPrism(BasisPrism.N, BasisPrism.N), "") for pos in path]
@@ -542,7 +559,49 @@ class PrismGraph:
         """Count how many stabilizers touch the given position."""
         return sum(1 for stab in stabilizers if position in stab)
 
-    def stabilizer_product_timeslice(self, z: int, dct_single_type_stabs, dct_patch_stabilizers):
+    @staticmethod
+    def find_neighboring_bdry_stabilizer(
+        init_stabilizer: list[Position3DHex],
+        stabilizers: list[list[Position3DHex]],
+        single_type_stabs: list[list[Position3DHex]],
+        no_filter: bool = False
+    ) -> list[list[Position3DHex]]:
+        """Find stabilizers at the boundary of the patch.
+
+        Boundary does not mean the connecting STDW but the real boundary.
+        A stabilizer is considered a boundary stabilizer if it touches init_stabilizer
+        and has at least one vertex that appears in at most 2 stabilizers in the list.
+        Stabilizers are excluded if ALL their low-appearance vertices (<=2) are
+        exclusively part of single_type_stabs.
+        """
+        init_set = set(init_stabilizer)
+
+        # find neighbors: stabilizers that share at least one vertex with init_stabilizer
+        neighbors = [
+            stab for stab in stabilizers
+            if stab is not init_stabilizer and set(stab) & init_set
+        ]
+        if no_filter:
+            return neighbors
+
+        single_type_verts = set(v for stab in single_type_stabs for v in stab)
+
+        result = []
+        for stab in neighbors:
+            # vertices of this stabilizer that appear in at most 2 stabilizers
+            low_appearance_verts = [
+                v for v in stab
+                if PrismGraph.count_stabilizer_appearances(v, stabilizers) <= 2
+            ]
+            if not low_appearance_verts:
+                continue
+            # exclude only if ALL low-appearance vertices are single_type verts
+            if not all(v in single_type_verts for v in low_appearance_verts):
+                result.append(stab)
+
+        return result
+
+    def stabilizer_product_timeslice(self, z: int, d: int, dct_single_type_stabs, dct_patch_stabilizers):
         """Construct the logical operator corresponding to a horizonatl correlation surface.
 
         this means that we look for a stabilizer product that transports a logical
@@ -562,6 +621,47 @@ class PrismGraph:
             [stab for stabs in dct_single_type_stabs.values() for stab in stabs]
             + [stab for stabs in dct_patch_stabilizers.values() for stab in stabs]
         )
+
+        def _get_color(stab):
+            stab_set = set(stab)
+            return next(color for key, color in assignment.items() if set(key) == stab_set)
+        
+        all_paths_stars = []
+
+
+        #load a cached star operator or create a new seed star op and cache it
+        if d in self.seed_star_op: #load an already generated seed
+            cached_star_op, cached_prism = self.seed_star_op[d]
+            # Remap micro-positions to current z
+            star_op_init = [
+                Position3DHex(p.x, p.y, z) for p in cached_star_op
+            ]
+            cached_prism = self.seed_star_op[d][1]
+            # update z to current timeslice
+            init_prism = Prism(
+                Position3DHex(cached_prism.position.x, cached_prism.position.y, z),
+                cached_prism.kind,
+                cached_prism.label,
+            )
+
+        else:
+            #generate initial star operator
+            init_prism_pos = all_paths[0][0]#choose some element
+            if init_prism_pos.x % 2 == 0:
+                triangle_type = "upwards"
+            else:
+                triangle_type = "downwards"
+
+            init_prism = Prism(
+                init_prism_pos,
+                "NN", #just some choice
+                ""
+            )
+            left_corner_lst = self.corners_timeslice(z, d, [init_prism]) #only 1 left corner necessary at this point
+
+            nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner_lst[0], triangle_type)
+            star_op_init = ZXPrism.star_operator_patch(triangle_type, nodes_triangle_bdry)
+            self.seed_star_op[d] = (star_op_init.copy(), init_prism)
 
         for path in all_paths:
             stabilizer_product = []
@@ -601,6 +701,13 @@ class PrismGraph:
                     if color_right is not None:
                         break
 
+                if idx == 1:
+                    color_stdw_start = color_left
+                    print("color start", color_stdw_start)
+                elif idx == len(path):
+                    color_stdw_end = color_right
+                    print("color end", color_stdw_end)
+
                 # add all stabilizers of this prism with matching colors
                 prism_stabilizers = next(
                     stabs for prism, stabs in dct_patch_stabilizers.items()
@@ -633,6 +740,163 @@ class PrismGraph:
                         if all(bool_lst):
                             stabilizer_product.append(stab)
 
+            #----------------star ops---------------------
+            def _reflect_to(target_pos: Position3DHex) -> list[Position3DHex]:
+                #! use this method maybe also in the star slice generation. currently duplicate code
+                macro_path = init_prism.position.shortest_path_spatial(target_pos)
+                path_prisms = [Prism(pos, ZXPrism(BasisPrism.N, BasisPrism.N), "") for pos in macro_path]
+                left_corner_lst = self.corners_timeslice(z, d, path_prisms)
+                star_op_tmp = star_op_init.copy()
+                for idx, (pos, corner) in enumerate(zip(macro_path, left_corner_lst)):
+                    triangle_type = "upwards" if pos.x % 2 == 0 else "downwards"
+                    nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, corner, triangle_type)
+                    if idx + 1 < len(macro_path):
+                        dummy_pipe = PrismPipe(
+                            path_prisms[idx], path_prisms[idx + 1],
+                            PrismPipeKind(hor=BasisPrism.N, ver=BasisPrism.N)
+                        )
+                        direction = dummy_pipe.direction_connecting_bdry()
+                        star_op_tmp = ZXPrism.reflect_star_operator(star_op_tmp, direction, triangle_type, nodes_triangle_bdry)
+                return star_op_tmp
+
+            start_point = path[0]
+            end_point = path[-1]
+            start_star = _reflect_to(start_point)
+            end_star   = _reflect_to(end_point)
+
+            #---------------------------------------
+            #find color-pair of the two thirds connected to the bulk patches.
+            #for patch at start_point find the color of the weight-4 stabilizers
+
+            # Get patch stabilizers and single-type stabs for start_point
+            start_patch_stabs = next(
+                stabs for prism, stabs in dct_patch_stabilizers.items()
+                if prism.position == start_point
+            )
+            start_single_type_stabs = [
+                stab
+                for pipe, stabs in dct_single_type_stabs.items()
+                if pipe.u.position == start_point or pipe.v.position == start_point
+                for stab in stabs
+            ]
+
+            #end
+            end_patch_stabs = next(
+                stabs for prism, stabs in dct_patch_stabilizers.items()
+                if prism.position == end_point
+            )
+            end_single_type_stabs = [
+                stab
+                for pipe, stabs in dct_single_type_stabs.items()
+                if pipe.u.position == end_point or pipe.v.position == end_point
+                for stab in stabs
+            ]
+
+            def _helper_bdry_start_end(single_type_stabs, star, patch_stabs):
+                bdry_bdry = [stab for stab in single_type_stabs if len(stab) == 3 or len(stab) == 5]
+                assert len(bdry_bdry) == 2, f"Internal error. {bdry_bdry}"
+
+                bdry_1 = []
+                temp_neigh = [bdry_bdry[0]]
+                seen = [bdry_bdry[0]]
+                while not set([v for stab in temp_neigh for v in stab]) & set(star):
+                    temp_neigh = self.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
+                    temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
+                    seen += temp_neigh
+                    bdry_1 += temp_neigh
+
+                bdry_2 = []
+                temp_neigh = [bdry_bdry[1]]
+                seen = [bdry_bdry[1]]
+                while not set([v for stab in temp_neigh for v in stab]) & set(star):
+                    temp_neigh = self.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
+                    temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
+                    seen += temp_neigh
+                    bdry_2 += temp_neigh
+
+                return bdry_1, bdry_2
+
+            bdry_1_from_start, bdry_2_from_start = _helper_bdry_start_end(start_single_type_stabs, start_star, start_patch_stabs)
+            stabilizer_product += bdry_1_from_start
+            stabilizer_product += bdry_2_from_start
+            bdry_1_from_end, bdry_2_from_end = _helper_bdry_start_end(end_single_type_stabs, end_star, end_patch_stabs)
+            stabilizer_product += bdry_1_from_end
+            stabilizer_product += bdry_2_from_end
+
+            def _helper_walk_bdry_to_middle_star(bdry, star, patch_stabs, single_type_stabs):
+                stabilizer_product_temp = []
+                seen = bdry
+                colors = [_get_color(bdry[0]), _get_color(bdry[1])]
+                temp_neigh = bdry
+                star_set = set(star)
+                seen_star_vertices = set(v for stab in bdry for v in stab if v in star_set)
+                flag = True
+                while flag:
+                    temp_neigh_second = []
+                    for el in temp_neigh:
+                        temp_neigh_second += self.find_neighboring_bdry_stabilizer(el, patch_stabs, single_type_stabs, True)
+                    temp_neigh = [stab for stab in temp_neigh_second if not any(set(stab) == set(s) for s in seen)]
+                    seen += temp_neigh
+                    temp_neigh = [stab for stab in temp_neigh if assignment[tuple(stab)] in colors]  # filter color
+
+                    # filter out stabilizers that touch already-seen star vertices
+                    temp_neigh = [
+                        stab for stab in temp_neigh
+                        if not (set(stab) & star_set & seen_star_vertices)
+                    ]
+
+                    if not temp_neigh:
+                        flag = False
+                    else:
+                        # update seen star vertices before adding
+                        seen_star_vertices |= set(v for stab in temp_neigh for v in stab if v in star_set)
+                        stabilizer_product_temp += temp_neigh
+                return stabilizer_product_temp
+
+            #from bdry_1_from_start to middle
+            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_1_from_start, start_star, start_patch_stabs, start_single_type_stabs)
+            #from bdry_2_from_start to middle
+            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_2_from_start, start_star, start_patch_stabs, start_single_type_stabs)
+            #from bdry_1_from_end to middle
+            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_1_from_end, end_star, end_patch_stabs, end_single_type_stabs)
+            #from bdry_2_from_end to middle
+            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_2_from_end, end_star, end_patch_stabs, end_single_type_stabs)
+
+            #fill missing
+            #most likely this is not yet correct, thus one has to add further stabilizers along the star arm pointing into the stdw
+            def _fill_missing_star(star, patch_stabs):
+                product_temp = []
+                while True:
+                    evenly_touched = [
+                        v for v in star
+                        if self.count_stabilizer_appearances(v, stabilizer_product + product_temp) % 2 == 0
+                    ]
+                    if not evenly_touched:
+                        break
+                    evenly_touched_set = set(evenly_touched)
+                    newly_added = []
+                    covered_this_round = set()
+                    for stab in patch_stabs:
+                        touching = set(stab) & evenly_touched_set
+                        # only add if it touches evenly-touched vertices not yet covered this round
+                        if len(touching - covered_this_round) >= 2:
+                            newly_added.append(stab)
+                            covered_this_round |= touching
+                    if not newly_added:
+                        break
+                    product_temp += newly_added
+                return product_temp
+
+            #!TODO debug this!!!!!!!!!!!!
+
+            stabilizer_product += _fill_missing_star(start_star, start_patch_stabs)
+            stabilizer_product += _fill_missing_star(end_star, end_patch_stabs)
+
+            all_paths_stars.append([start_star, end_star])
+
+            #!TODO add weight-2 stabilizer at start/end stdw based on the 
+
+            #------------------remaining weight-2 stabilizers---------------------
             #check those weight-6 stabilizers that have qubits that are not touched
             #these are placed along STDWs not part of the current path
             #to make them trivial, add the respective weight-2 stabilizer
@@ -641,10 +905,13 @@ class PrismGraph:
                 once_touched = [
                     qubit for qubit in stab
                     if self.count_stabilizer_appearances(qubit, stabilizer_product) == 1
+                    and qubit not in (start_star, end_star)
                 ]
-                if len(once_touched) == 2:
+                if len(once_touched) == 2 and once_touched[0].is_neighbour(once_touched[1]):
                     stabilizer_product.append(once_touched)
-
             all_paths_stabilizer_product.append(stabilizer_product.copy())
 
-        return assignment, all_paths_stabilizer_product #assignment is order dependent, so please return the specific assignment which is in general not unique
+        #!TODO
+        #!add test that every node in the stars has to be touched odd times + all others even times
+
+        return assignment, all_paths, all_paths_stabilizer_product, all_paths_stars #assignment is order dependent, so please return the specific assignment which is in general not unique
