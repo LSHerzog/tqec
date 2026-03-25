@@ -1,4 +1,5 @@
 import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import mqt.qecc
 import numpy as np
@@ -121,4 +122,78 @@ def plot_position_dict(
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_title("Position3DHex boundary vertices")
+    plt.tight_layout()
+
+def plot_position_dict_3color(
+    *,
+    size,
+    color_assignment: dict[tuple, str],
+    stabilizer_product: list[list[Position3DHex]] | None = None,
+    star_operators=None,
+    show_positions: bool = False,
+) -> plt.Figure:
+    """Plot Position3DHex positions using their to_euclidean coords."""
+    fig, ax = plt.subplots(figsize=size)
+    for positions, color in color_assignment.items():
+        if not positions:
+            continue
+        pts = np.array([p.to_euclidean()[:2] for p in positions])
+        centroid = pts.mean(axis=0)
+        angles = np.arctan2(pts[:, 1] - centroid[1], pts[:, 0] - centroid[0])
+        pts = pts[np.argsort(angles)]
+        rgba = mcolors.to_rgba(color, alpha=0.5)
+        poly = Polygon(pts, closed=True,
+                       facecolor=rgba, edgecolor=color, linewidth=1.5, zorder=2)
+        ax.add_patch(poly)
+        if show_positions:
+            for p in positions:
+                pt = p.to_euclidean()[:2]
+                ax.annotate(
+                f"({p.x},{p.y})",
+                xy=pt,
+                fontsize=10,
+                ha="center", va="center",
+                zorder=8,
+                color="grey",
+            )
+    if stabilizer_product is not None:
+        for stab in stabilizer_product:
+            if not stab:
+                continue
+            if len(stab) != 2:
+                pts = np.array([p.to_euclidean()[:2] for p in stab])
+                centroid = pts.mean(axis=0)
+                angles = np.arctan2(pts[:, 1] - centroid[1], pts[:, 0] - centroid[0])
+                pts = pts[np.argsort(angles)]
+                poly = Polygon(pts, closed=True,
+                            facecolor=(0, 0, 0, 0.3), edgecolor="black", linewidth=2.0, zorder=4)
+                ax.add_patch(poly)
+                ax.plot(
+                    [centroid[0] - 0.3, centroid[0] + 0.3],
+                    [centroid[1], centroid[1]],
+                    color="black", linewidth=1.5, zorder=5
+                )
+                ax.plot(
+                    [centroid[0], centroid[0]],
+                    [centroid[1] - 0.3, centroid[1] + 0.3],
+                    color="black", linewidth=1.5, zorder=5
+                )
+                continue
+            pts = np.array([p.to_euclidean()[:2] for p in stab])
+            ax.plot(pts[:, 0], pts[:, 1], color="dimgray", linewidth=3.0, zorder=6)
+    if star_operators is not None:
+        for star_operator in star_operators:
+            for pos in star_operator:
+                pt = pos.to_euclidean()[:2]
+                ax.plot(
+                    pt[0], pt[1],
+                    marker="o", markersize=8,
+                    color="deeppink", markeredgecolor="hotpink",
+                    linewidth=0, zorder=7,
+                )
+    ax.autoscale_view()
+    ax.set_aspect("equal")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title("Stabilizers")
     plt.tight_layout()

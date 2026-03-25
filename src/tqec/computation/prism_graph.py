@@ -2,21 +2,41 @@
 
 from __future__ import annotations
 
-from networkx import Graph, is_connected
-import networkx as nx
-from tqec.computation.prism import Port, Position3DHex, PrismKind, BasisPrism, prism_kind_from_string, Prism, ZXPrism
-from tqec.computation.pipe_prism import PrismPipeKind, PrismPipe
-from typing import TYPE_CHECKING, Any, cast
-from tqec.computation.correlation import find_correlation_surfaces
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
+import networkx as nx
+from networkx import Graph
+
+from tqec.computation.correlation import find_correlation_surfaces
+from tqec.computation.pipe_prism import PrismPipe, PrismPipeKind
+from tqec.computation.prism import (
+    BasisPrism,
+    Port,
+    Position3DHex,
+    Prism,
+    PrismKind,
+    ZXPrism,
+    prism_kind_from_string,
+)
 from tqec.utils.exceptions import TQECError
 
-import logging
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from tqec.interop.pyzx.positioned_prism import PositionedHexZX
     from tqec.computation.correlation import CorrelationSurface
+    from tqec.interop.pyzx.positioned_prism import PositionedHexZX
+
+@dataclass
+class StabilizerProductResult:
+    assignment: dict
+    paths_x: list
+    paths_z: list
+    stars_x: list
+    stars_z: list
+    stabilizer_products_x: list
+    stabilizer_products_z: list
 
 
 class PrismGraph:
@@ -235,7 +255,7 @@ class PrismGraph:
             #translate to prisms to have no type mismatch, but random prism generation here
             path_prisms = [Prism(pos, ZXPrism(BasisPrism.N, BasisPrism.N), "") for pos in path]
             left_corner_lst_tmp = self.corners_timeslice(z, d, path_prisms)
-
+            #!todo deduplicate this code with _reflect_to
             #go through each macro path and reflect consecutively until destination patch reached
             #this yields some repetetive computations but not too bad i think.
             star_op_tmp = star_op_init.copy()
@@ -596,6 +616,23 @@ class PrismGraph:
 
         return result
 
+    def _reflect_to(self, target_pos: Position3DHex, init_prism: Prism, star_op_init, z, d) -> list[Position3DHex]:
+        macro_path = init_prism.position.shortest_path_spatial(target_pos)
+        path_prisms = [Prism(pos, ZXPrism(BasisPrism.N, BasisPrism.N), "") for pos in macro_path]
+        left_corner_lst = self.corners_timeslice(z, d, path_prisms)
+        star_op_tmp = star_op_init.copy()
+        for idx, (pos, corner) in enumerate(zip(macro_path, left_corner_lst)):
+            triangle_type = "upwards" if pos.x % 2 == 0 else "downwards"
+            nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, corner, triangle_type)
+            if idx + 1 < len(macro_path):
+                dummy_pipe = PrismPipe(
+                    path_prisms[idx], path_prisms[idx + 1],
+                    PrismPipeKind(hor=BasisPrism.N, ver=BasisPrism.N)
+                )
+                direction = dummy_pipe.direction_connecting_bdry()
+                star_op_tmp = ZXPrism.reflect_star_operator(star_op_tmp, direction, triangle_type, nodes_triangle_bdry)
+        return star_op_tmp
+
     def _test_stabilizer_product_timeslice(self, stabilizer_product, start_star, end_star):
         """Test whether a stabilizer product is valid.
 
@@ -615,6 +652,96 @@ class PrismGraph:
         #logger.info("Stabilizer product test passed.")
         print("stabilizer tests passed")
 
+    @staticmethod
+    def _helper_bdry_start_end(single_type_stabs, star, patch_stabs):
+        bdry_bdry = [stab for stab in single_type_stabs if len(stab) == 3 or len(stab) == 5]
+        assert len(bdry_bdry) == 2, f"Internal error. {bdry_bdry}"
+        bdry_1 = []
+        temp_neigh = [bdry_bdry[0]]
+        seen = [bdry_bdry[0]]
+        while not set([v for stab in temp_neigh for v in stab]) & set(star):
+            temp_neigh = PrismGraph.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
+            temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
+            seen += temp_neigh
+            bdry_1 += temp_neigh
+
+        bdry_2 = []
+        temp_neigh = [bdry_bdry[1]]
+        seen = [bdry_bdry[1]]
+        while not set([v for stab in temp_neigh for v in stab]) & set(star):
+            temp_neigh = PrismGraph.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
+            temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
+            seen += temp_neigh
+            bdry_2 += temp_neigh
+
+        return bdry_1, bdry_2
+
+    @staticmethod
+    def _helper_split_patch_in_thirds(star, patch_stabs):
+        """Find regions of the patch determined by star.
+
+        The regions are not perfect, but next helper can handle this
+        """
+        #flatten patch stabs into unique nodes
+        flattened_patch = set([v for stab in patch_stabs for v in stab])
+
+        remaining = flattened_patch - set(star)
+        regions = []
+
+        def flood(node: Position3DHex, component: set[Position3DHex]) -> None:
+            component.add(node)
+            remaining.discard(node)
+            for nb in node.neighbors_spatial():
+                if nb in remaining:
+                    flood(nb, component)
+
+        while remaining:
+            component: set[Position3DHex] = set()
+            flood(next(iter(remaining)), component)
+            regions.append(component)
+
+        #include also the neighboring star nodes
+        for star_node in star:
+            for region in regions:
+                if any(nb in region for nb in star_node.neighbors_spatial()):
+                    region.add(star_node)
+        return regions
+
+    @staticmethod
+    def _get_color(stab, assignment):
+        stab_set = set(stab)
+        return next(color for key, color in assignment.items() if set(key) == stab_set)
+
+    @staticmethod
+    def _helper_fill_third(bdry, patch_stabs, regions, assignment):
+        #determine the region that contains nodes from bdry[0] which is just a random choice
+        for region in regions:
+            if any(node in bdry[0] for node in region):
+                region_current=region
+                break
+
+        #check which stabilizers are in the region by checking that
+        #1. a weight 6 stabilizer needs at least 5 nodes overlap with the region
+        #2. a weight 4 stabilizer needs at least 3 nodes overlap with the region
+        # these special rules apply because the regions of _helper_split_patch_in_thirds are  not perfect
+        region_stabs = []
+        for stab in patch_stabs:
+            overlap = sum(1 for node in stab if node in region_current)
+            if len(stab) == 4:
+                if overlap >= 3:
+                    region_stabs.append(stab)
+            elif len(stab) == 6:
+                if overlap >=5:
+                    region_stabs.append(stab)
+            else:
+                raise TQECError("internal error")
+
+        #filter the color
+        colors = [PrismGraph._get_color(bdry[0], assignment), PrismGraph._get_color(bdry[1], assignment)]
+        stabilizer_product_temp = [stab for stab in region_stabs if assignment[tuple(stab)] in colors]
+
+        return stabilizer_product_temp
+
     def stabilizer_product_timeslice(self, z: int, d: int, dct_single_type_stabs, dct_patch_stabilizers, testing: bool = True):
         """Construct the logical operator corresponding to a horizonatl correlation surface.
 
@@ -628,18 +755,15 @@ class PrismGraph:
         """
         all_paths = self.find_all_linear_paths_timeslice(z = z)
         all_paths_stabilizer_product = []
+        all_paths_stars = []
+
+        #----------------setup 3-coloring and seed star operator ------------------
 
         #3coloring of full stabilizers whatever the z or x kind, this is specified later
         assignment = self.find_three_coloring_stabilizers(
             [stab for stabs in dct_single_type_stabs.values() for stab in stabs]
             + [stab for stabs in dct_patch_stabilizers.values() for stab in stabs]
         )
-
-        def _get_color(stab):
-            stab_set = set(stab)
-            return next(color for key, color in assignment.items() if set(key) == stab_set)
-
-        all_paths_stars = []
 
         #load a cached star operator or create a new seed star op and cache it
         if d in self.seed_star_op: #load an already generated seed
@@ -669,11 +793,14 @@ class PrismGraph:
                 "NN", #just some choice
                 ""
             )
-            left_corner_lst = self.corners_timeslice(z, d, [init_prism]) #only 1 left corner necessary at this point
+            #only 1 left corner necessary at this point
+            left_corner_lst = self.corners_timeslice(z, d, [init_prism])
 
             nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, left_corner_lst[0], triangle_type)
             star_op_init = ZXPrism.star_operator_patch(triangle_type, nodes_triangle_bdry)
             self.seed_star_op[d] = (star_op_init.copy(), init_prism)
+
+        #--------------go through all paths and collect the stabilizer products-----------------
 
         for path in all_paths:
             stabilizer_product = []
@@ -745,28 +872,10 @@ class PrismGraph:
                             stabilizer_product.append(stab)
 
             #----------------star ops---------------------
-            def _reflect_to(target_pos: Position3DHex) -> list[Position3DHex]:
-                #! use this method maybe also in the star slice generation. currently duplicate code
-                macro_path = init_prism.position.shortest_path_spatial(target_pos)
-                path_prisms = [Prism(pos, ZXPrism(BasisPrism.N, BasisPrism.N), "") for pos in macro_path]
-                left_corner_lst = self.corners_timeslice(z, d, path_prisms)
-                star_op_tmp = star_op_init.copy()
-                for idx, (pos, corner) in enumerate(zip(macro_path, left_corner_lst)):
-                    triangle_type = "upwards" if pos.x % 2 == 0 else "downwards"
-                    nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, corner, triangle_type)
-                    if idx + 1 < len(macro_path):
-                        dummy_pipe = PrismPipe(
-                            path_prisms[idx], path_prisms[idx + 1],
-                            PrismPipeKind(hor=BasisPrism.N, ver=BasisPrism.N)
-                        )
-                        direction = dummy_pipe.direction_connecting_bdry()
-                        star_op_tmp = ZXPrism.reflect_star_operator(star_op_tmp, direction, triangle_type, nodes_triangle_bdry)
-                return star_op_tmp
-
             start_point = path[0]
             end_point = path[-1]
-            start_star = _reflect_to(start_point)
-            end_star   = _reflect_to(end_point)
+            start_star = self._reflect_to(start_point, init_prism, star_op_init, z, d)
+            end_star   = self._reflect_to(end_point, init_prism, star_op_init, z, d)
 
             #---------------------------------------
             #find color-pair of the two thirds connected to the bulk patches.
@@ -780,7 +889,7 @@ class PrismGraph:
             start_single_type_stabs = [
                 stab
                 for pipe, stabs in dct_single_type_stabs.items()
-                if pipe.u.position == start_point or pipe.v.position == start_point
+                if pipe.u.position == start_point or pipe.v.position == start_point  # noqa: PLR1714
                 for stab in stabs
             ]
 
@@ -792,117 +901,50 @@ class PrismGraph:
             end_single_type_stabs = [
                 stab
                 for pipe, stabs in dct_single_type_stabs.items()
-                if pipe.u.position == end_point or pipe.v.position == end_point
+                if pipe.u.position == end_point or pipe.v.position == end_point  # noqa: PLR1714
                 for stab in stabs
             ]
 
-            def _helper_bdry_start_end(single_type_stabs, star, patch_stabs):
-                bdry_bdry = [stab for stab in single_type_stabs if len(stab) == 3 or len(stab) == 5]
-                assert len(bdry_bdry) == 2, f"Internal error. {bdry_bdry}"
-                bdry_1 = []
-                temp_neigh = [bdry_bdry[0]]
-                seen = [bdry_bdry[0]]
-                while not set([v for stab in temp_neigh for v in stab]) & set(star):
-                    temp_neigh = self.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
-                    temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
-                    seen += temp_neigh
-                    bdry_1 += temp_neigh
-
-                bdry_2 = []
-                temp_neigh = [bdry_bdry[1]]
-                seen = [bdry_bdry[1]]
-                while not set([v for stab in temp_neigh for v in stab]) & set(star):
-                    temp_neigh = self.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
-                    temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
-                    seen += temp_neigh
-                    bdry_2 += temp_neigh
-
-                return bdry_1, bdry_2
-
-            bdry_1_from_start, bdry_2_from_start = _helper_bdry_start_end(start_single_type_stabs, start_star, start_patch_stabs)
+            bdry_1_from_start, bdry_2_from_start = self._helper_bdry_start_end(
+                start_single_type_stabs, start_star, start_patch_stabs
+            )
             stabilizer_product += bdry_1_from_start
             stabilizer_product += bdry_2_from_start
-            bdry_1_from_end, bdry_2_from_end = _helper_bdry_start_end(end_single_type_stabs, end_star, end_patch_stabs)
+            bdry_1_from_end, bdry_2_from_end = self._helper_bdry_start_end(
+                end_single_type_stabs, end_star, end_patch_stabs
+            )
             stabilizer_product += bdry_1_from_end
             stabilizer_product += bdry_2_from_end
 
-            def _helper_split_patch_in_thirds(star, patch_stabs):
-                """Find regions of the patch determined by star.
-
-                The regions are not perfect, but next helper can handle this
-                """
-                #flatten patch stabs into unique nodes
-                flattened_patch = set([v for stab in patch_stabs for v in stab])
-
-                remaining = flattened_patch - set(star)
-                regions = []
-
-                def flood(node: Position3DHex, component: set[Position3DHex]) -> None:
-                    component.add(node)
-                    remaining.discard(node)
-                    for nb in node.neighbors_spatial():
-                        if nb in remaining:
-                            flood(nb, component)
-
-                while remaining:
-                    component: set[Position3DHex] = set()
-                    flood(next(iter(remaining)), component)
-                    regions.append(component)
-
-                #include also the neighboring star nodes
-                for star_node in star:
-                    for region in regions:
-                        if any(nb in region for nb in star_node.neighbors_spatial()):
-                            region.add(star_node)
-                return regions
-
-            def _helper_walk_bdry_to_middle_star(bdry, patch_stabs,regions):
-                #determine the region that contains nodes from bdry[0] which is just a random choice
-                for region in regions:
-                    if any(node in bdry[0] for node in region):
-                        region_current=region
-                        break
-
-                #check which stabilizers are in the region by checking that
-                #1. a weight 6 stabilizer needs at least 5 nodes overlap with the region
-                #2. a weight 4 stabilizer needs at least 3 nodes overlap with the region
-                # these special rules apply because the regions of _helper_split_patch_in_thirds are  not perfect
-                region_stabs = []
-                for stab in patch_stabs:
-                    overlap = sum(1 for node in stab if node in region_current)
-                    if len(stab) == 4:
-                        if overlap >= 3:
-                            region_stabs.append(stab)
-                    elif len(stab) == 6:
-                        if overlap >=5:
-                            region_stabs.append(stab)
-                    else:
-                        raise TQECError("internal error")
-
-                #filter the color
-                colors = [_get_color(bdry[0]), _get_color(bdry[1])]
-                stabilizer_product_temp = [stab for stab in region_stabs if assignment[tuple(stab)] in colors]
-
-                return stabilizer_product_temp
-
-            regions_start = _helper_split_patch_in_thirds(start_star, start_patch_stabs)
-            regions_end = _helper_split_patch_in_thirds(end_star, end_patch_stabs)
+            regions_start = self._helper_split_patch_in_thirds(start_star, start_patch_stabs)
+            regions_end = self._helper_split_patch_in_thirds(end_star, end_patch_stabs)
 
             #from bdry_1_from_start to middle
-            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_1_from_start, start_patch_stabs, regions_start)
+            stabilizer_product += self._helper_fill_third(
+                bdry_1_from_start, start_patch_stabs, regions_start, assignment
+            )
             #from bdry_2_from_start to middle
-            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_2_from_start, start_patch_stabs, regions_start)
+            stabilizer_product += self._helper_fill_third(
+                bdry_2_from_start, start_patch_stabs, regions_start, assignment
+            )
             #from bdry_1_from_end to middle
-            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_1_from_end, end_patch_stabs, regions_end)
+            stabilizer_product += self._helper_fill_third(
+                bdry_1_from_end, end_patch_stabs, regions_end, assignment
+            )
             #from bdry_2_from_end to middle
-            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_2_from_end, end_patch_stabs, regions_end)
+            stabilizer_product += self._helper_fill_third(
+                bdry_2_from_end, end_patch_stabs, regions_end, assignment
+            )
 
             all_paths_stars.append([start_star, end_star])
 
             #remove duplicate stabilizers
-            stabilizer_product = [stab for i, stab in enumerate(stabilizer_product) if not any(set(stab) == set(s) for s in stabilizer_product[:i])]
+            stabilizer_product = [
+                stab
+                for i, stab in enumerate(stabilizer_product)
+                if not any(set(stab) == set(s) for s in stabilizer_product[:i])]
 
-            #---------add weight-2 stabilizers according to the filling of the end/start patch------
+            #add weight-2 stabilizers according to the filling of the end/start patch
             boundary_start = self.find_boundary_stabilizers(
                 dct_patch_stabilizers, start_point, path[1], dct_single_type_stabs)
             boundary_end = self.find_boundary_stabilizers(
@@ -920,7 +962,7 @@ class PrismGraph:
                 if all(bool_lst):
                     stabilizer_product.append(stab_weight2)
 
-            #------------------remaining weight-2 stabilizers at bdries---------------------
+            #remaining weight-2 stabilizers at bdries
             #check those weight-6 stabilizers that have qubits that are not touched
             #these are placed along STDWs not part of the current path
             #to make them trivial, add the respective weight-2 stabilizer
@@ -946,6 +988,10 @@ class PrismGraph:
         #---------determine whether the CS is X or Z type.---------
         all_paths_stabilizer_product_x = []
         all_paths_stabilizer_product_z = []
+        all_paths_x = []
+        all_paths_z = []
+        stars_z = []
+        stars_x = []
 
         current_pipes = []
         for pos1, pos2, attrs in self._graph.edges(data=True):
@@ -954,14 +1000,26 @@ class PrismGraph:
                 if edge.kind.is_spatial:
                     current_pipes.append(edge)
         #just take the first prism pos, it is guaranteed by construction of the prism graph that it has to be consistent
-        #!split each possible path. if detached elements
-        basis = self._get_basis_from_pipes(start_point, current_pipes)
-        if basis == "Z": #turned around bc get basis is for vertical CS and here we have horizontal CS
-            all_paths_stabilizer_product_x = all_paths_stabilizer_product
-        elif basis == "X":
-            all_paths_stabilizer_product_z = all_paths_stabilizer_product
-        else:
-            raise TQECError("Internal error.")
+        for (path, stab_prod, star) in zip(all_paths, all_paths_stabilizer_product, all_paths_stars):
+            basis = self._get_basis_from_pipes(path[0], current_pipes)
+            if basis == "Z": #turned around bc get basis is for vertical CS and here we have horizontal CS
+                all_paths_stabilizer_product_x.append(stab_prod)
+                all_paths_x.append(path)
+                stars_x.append(star)
+            elif basis == "X":
+                all_paths_stabilizer_product_z.append(stab_prod)
+                all_paths_z.append(path)
+                stars_z.append(star)
+            else:
+                raise TQECError("Internal error.")
 
         #assignment is order dependent, so please return the specific assignment which is in general not unique
-        return assignment, all_paths, all_paths_stars, all_paths_stabilizer_product_x, all_paths_stabilizer_product_z
+        return StabilizerProductResult(
+            assignment=assignment,
+            paths_x=all_paths_x,
+            paths_z=all_paths_z,
+            stars_x=stars_x,
+            stars_z=stars_z,
+            stabilizer_products_x=all_paths_stabilizer_product_x,
+            stabilizer_products_z=all_paths_stabilizer_product_z,
+        )
