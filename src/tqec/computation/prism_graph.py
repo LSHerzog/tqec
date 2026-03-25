@@ -166,6 +166,17 @@ class PrismGraph:
 
         return list(components.values())
 
+    # assign X or Z via pipes: find any pipe connected to this prism and read its kind
+    @staticmethod
+    def _get_basis_from_pipes(prism_pos: Position3DHex, current_pipes: list[PrismPipe]) -> str:
+        for pipe in current_pipes:
+            if prism_pos in (pipe.u.position, pipe.v.position):
+                if pipe.kind.hor == BasisPrism.X and pipe.kind.ver == BasisPrism.Z:
+                    return "X"
+                elif pipe.kind.hor == BasisPrism.Z and pipe.kind.ver == BasisPrism.X:
+                    return "Z"
+        return "XZ"  # fallback for isolated prisms with no pipes, for them it's both X and Z
+
     def star_operator_timeslice(self, z:int, d:int):
         """Generate the star operator for a time slice."""
         #current timeslice
@@ -244,16 +255,6 @@ class PrismGraph:
                     star_op_final += star_op_tmp.copy()
                     prism_to_star_op[prism.position] = star_op_tmp.copy()
 
-        # assign X or Z via pipes: find any pipe connected to this prism and read its kind
-        def get_basis_from_pipes(prism_pos: Position3DHex) -> str:
-            for pipe in current_pipes:
-                if prism_pos in (pipe.u.position, pipe.v.position):
-                    if pipe.kind.hor == BasisPrism.X and pipe.kind.ver == BasisPrism.Z:
-                        return "X"
-                    elif pipe.kind.hor == BasisPrism.Z and pipe.kind.ver == BasisPrism.X:
-                        return "Z"
-            return "XZ"  # fallback for isolated prisms with no pipes, for them it's both X and Z
-
 
         #depending on the pipe ver/hor, decide whether the star operator is an x or z logical
         partitioned_star_ops = PrismGraph.split_into_connected_components(star_op_final)
@@ -263,7 +264,7 @@ class PrismGraph:
             component_set = set(component)
             for prism_pos, star_op in prism_to_star_op.items():
                 if component_set & set(star_op):
-                    basis = get_basis_from_pipes(prism_pos)
+                    basis = self._get_basis_from_pipes(prism_pos, current_pipes)
                     break
             if basis == "X":
                 star_ops_x.append(component)
@@ -460,15 +461,6 @@ class PrismGraph:
 
         #remaining stabilizers: weight 3 and weight 5 and weight 4
         # check what the neighboring weight-6 colors are and take the non appearing color.
-
-        #for other_stab in others:
-        #    other_vertices = set(other_stab)
-        #    neighboring_colors = set()
-        #    for stab in weight6:
-        #        if set(stab) & other_vertices:
-        #            neighboring_colors.add(assignment[tuple(stab)])
-        #    remaining = [c for c in COLORS if c not in neighboring_colors]
-        #    assignment[tuple(other_stab)] = remaining[0]
         unassigned = list(others)
         while unassigned:
             still_unassigned = []
@@ -577,7 +569,6 @@ class PrismGraph:
         Stabilizers are excluded if ALL their low-appearance vertices (<=2) are
         exclusively part of single_type_stabs.
         """
-        print("find neighboring bdry stabilizer")
         init_set = set(init_stabilizer)
 
         # find neighbors: stabilizers that share at least one vertex with init_stabilizer
@@ -585,7 +576,6 @@ class PrismGraph:
             stab for stab in stabilizers
             if set(stab) != set(init_stabilizer) and set(stab) & init_set
         ]
-        print("neighbors", neighbors)
         if no_filter:
             return neighbors
 
@@ -598,7 +588,6 @@ class PrismGraph:
                 v for v in stab
                 if PrismGraph.count_stabilizer_appearances(v, stabilizers) <= 2
             ]
-            print("low appearance verts", low_appearance_verts)
             if not low_appearance_verts:
                 continue
             # exclude only if ALL low-appearance vertices are single_type verts
@@ -639,7 +628,6 @@ class PrismGraph:
         """
         all_paths = self.find_all_linear_paths_timeslice(z = z)
         all_paths_stabilizer_product = []
-        x_or_z = [] #list of strings for all_paths_stabilizer_product that determins whether X or Z stabilizer product depending on pipe type.
 
         #3coloring of full stabilizers whatever the z or x kind, this is specified later
         assignment = self.find_three_coloring_stabilizers(
@@ -650,8 +638,8 @@ class PrismGraph:
         def _get_color(stab):
             stab_set = set(stab)
             return next(color for key, color in assignment.items() if set(key) == stab_set)
-        all_paths_stars = []
 
+        all_paths_stars = []
 
         #load a cached star operator or create a new seed star op and cache it
         if d in self.seed_star_op: #load an already generated seed
@@ -689,7 +677,6 @@ class PrismGraph:
 
         for path in all_paths:
             stabilizer_product = []
-            print("path", path)
             for idx, prism_pos in enumerate(path[1:-1], start=1):
                 # find boundary stabilizers between previous and current prism
                 boundary_left = self.find_boundary_stabilizers(
@@ -724,13 +711,6 @@ class PrismGraph:
                                 break
                     if color_right is not None:
                         break
-
-                if idx == 1:
-                    color_stdw_start = color_left
-                    print("color start", color_stdw_start)
-                elif idx == len(path)-1:
-                    color_stdw_end = color_right
-                    print("color end", color_stdw_end)
 
                 # add all stabilizers of this prism with matching colors
                 prism_stabilizers = next(
@@ -803,12 +783,6 @@ class PrismGraph:
                 if pipe.u.position == start_point or pipe.v.position == start_point
                 for stab in stabs
             ]
-            print("START SINGLE TYPE")
-            for stab in start_single_type_stabs:
-                print(stab)
-            print("START STAR")
-            for el in start_star:
-                print(el)
 
             #end
             end_patch_stabs = next(
@@ -821,26 +795,14 @@ class PrismGraph:
                 if pipe.u.position == end_point or pipe.v.position == end_point
                 for stab in stabs
             ]
-            print("END SINGLE TYPE")
-            for stab in end_single_type_stabs:
-                print(stab)
-            print("END STAR")
-            for el in end_star:
-                print(el)
 
             def _helper_bdry_start_end(single_type_stabs, star, patch_stabs):
                 bdry_bdry = [stab for stab in single_type_stabs if len(stab) == 3 or len(stab) == 5]
                 assert len(bdry_bdry) == 2, f"Internal error. {bdry_bdry}"
-                print("helper start singlet ype stabs")
-                for el in single_type_stabs:
-                    print(el)
-                print("star operator")
-                print(star)
                 bdry_1 = []
                 temp_neigh = [bdry_bdry[0]]
                 seen = [bdry_bdry[0]]
                 while not set([v for stab in temp_neigh for v in stab]) & set(star):
-                    print("(1) temp_neigh", temp_neigh)
                     temp_neigh = self.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
                     temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
                     seen += temp_neigh
@@ -850,7 +812,6 @@ class PrismGraph:
                 temp_neigh = [bdry_bdry[1]]
                 seen = [bdry_bdry[1]]
                 while not set([v for stab in temp_neigh for v in stab]) & set(star):
-                    print("(2) temp_neigh", temp_neigh)
                     temp_neigh = self.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
                     temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
                     seen += temp_neigh
@@ -865,242 +826,99 @@ class PrismGraph:
             stabilizer_product += bdry_1_from_end
             stabilizer_product += bdry_2_from_end
 
-            def _extract_stdw_arm(star, single_type_stabs):
-                """Extract the `arm` of the star operator that penetrates the STDW."""
-                extracted_arm = []
-                single_type_verts = set(v for stab in single_type_stabs for v in stab)
+            def _helper_split_patch_in_thirds(star, patch_stabs):
+                """Find regions of the patch determined by star.
 
-                # find the starting node that touches one of the single_type_stabs
-                for node in star:
-                    if node in single_type_verts:
-                        extracted_arm.append(node)
+                The regions are not perfect, but next helper can handle this
+                """
+                #flatten patch stabs into unique nodes
+                flattened_patch = set([v for stab in patch_stabs for v in stab])
+
+                remaining = flattened_patch - set(star)
+                regions = []
+
+                def flood(node: Position3DHex, component: set[Position3DHex]) -> None:
+                    component.add(node)
+                    remaining.discard(node)
+                    for nb in node.neighbors_spatial():
+                        if nb in remaining:
+                            flood(nb, component)
+
+                while remaining:
+                    component: set[Position3DHex] = set()
+                    flood(next(iter(remaining)), component)
+                    regions.append(component)
+
+                #include also the neighboring star nodes
+                for star_node in star:
+                    for region in regions:
+                        if any(nb in region for nb in star_node.neighbors_spatial()):
+                            region.add(star_node)
+                return regions
+
+            def _helper_walk_bdry_to_middle_star(bdry, patch_stabs,regions):
+                #determine the region that contains nodes from bdry[0] which is just a random choice
+                for region in regions:
+                    if any(node in bdry[0] for node in region):
+                        region_current=region
                         break
 
-                star_set = set(star)
-                flag = True
-                while flag:
-                    current_node = extracted_arm[-1]
-                    for star_node in star:
-                        if star_node in extracted_arm:
-                            continue
-                        if star_node.is_neighbour(current_node) or star_node.is_next_nearest_neighbour(current_node):
-                            next_nearest_neighbors = star_node.next_nearest_neighbours_spatial()
-                            if len(set(next_nearest_neighbors) & star_set) == 3:
-                                # middle node reached, stop without adding it
-                                flag = False
-                                break
-                            else:
-                                extracted_arm.append(star_node)
-                                break  # restart from new end of arm
-                return extracted_arm
-
-            def _helper_walk_bdry_to_middle_star(bdry, star, patch_stabs, single_type_stabs):
-                stabilizer_product_temp = []
-                seen = bdry
-                colors = [_get_color(bdry[0]), _get_color(bdry[1])]
-                temp_neigh = bdry
-                star_set = set(star)
-                seen_star_vertices = set(v for stab in bdry for v in stab if v in star_set)
-                seen_twice_star_vertices = set()
-                extracted_arm = _extract_stdw_arm(star, single_type_stabs)
-                extracted_arm_set = set(extracted_arm)
-                flag = True
-                while flag:
-                    temp_neigh_second = []
-                    for el in temp_neigh:
-                        temp_neigh_second += self.find_neighboring_bdry_stabilizer(el, patch_stabs, single_type_stabs, True)
-                    temp_neigh = [stab for stab in temp_neigh_second if not any(set(stab) == set(s) for s in seen)]
-                    temp_neigh = [stab for stab in temp_neigh if assignment[tuple(stab)] in colors]  # filter color
-                    # filter out stabilizers that touch already-seen star vertices, with exceptions:
-                    # - extracted_arm vertices may be touched a second time, but not a third
-                    # - non-arm star vertices may never be touched a second time
-                    temp_neigh = [
-                        stab for stab in temp_neigh
-                        if not (set(stab) & (seen_star_vertices - extracted_arm_set))
-                        and not (set(stab) & seen_twice_star_vertices)
-                    ]
-                    seen += temp_neigh
-                    if not temp_neigh:
-                        flag = False
-                    else:
-                        newly_touched = set(v for stab in temp_neigh for v in stab if v in star_set)
-                        seen_twice_star_vertices |= newly_touched & seen_star_vertices & extracted_arm_set
-                        seen_star_vertices |= newly_touched
-                        stabilizer_product_temp += temp_neigh
-                        # stop after this round if all newly added stabilizers touch an arm vertex
-                        # i.e. we have reached the middle arm — allow this round but not the next
-                        if all(set(stab) & extracted_arm_set for stab in temp_neigh):
-                            flag = False
-
-                stabilizer_product_temp = [stab for i, stab in enumerate(stabilizer_product_temp)
-                        if not any(set(stab) == set(s) for s in stabilizer_product_temp[:i])]
-                return stabilizer_product_temp
-            """
-            def get_neighbors_of_set(temp_neigh, patch_stabs):
-                #
-                #Find all neighbors of stabilizers in temp_neigh,
-                #excluding the stabilizers in temp_neigh themselves,
-                #without any filtering and without duplicates.
-                #
-                temp_neigh_set = set(map(frozenset, temp_neigh))  # for fast exclusion and deduplication
-                neighbors_set = set()
-
+                #check which stabilizers are in the region by checking that
+                #1. a weight 6 stabilizer needs at least 5 nodes overlap with the region
+                #2. a weight 4 stabilizer needs at least 3 nodes overlap with the region
+                # these special rules apply because the regions of _helper_split_patch_in_thirds are  not perfect
+                region_stabs = []
                 for stab in patch_stabs:
-                    stab_key = frozenset(stab)
-                    if stab_key in temp_neigh_set:
-                        continue  # skip any stabilizer that's in temp_neigh
-
-                    # check if this stabilizer shares at least one vertex with any in temp_neigh
-                    if any(set(stab) & set(neigh) for neigh in temp_neigh):
-                        neighbors_set.add(stab_key)
-
-                # convert back to list[list[Position3DHex]]
-                return [list(n) for n in neighbors_set]
-            def _helper_walk_bdry_to_middle_star(bdry, star, patch_stabs, single_type_stabs):
-                # ---------------- DEBUG TARGET ----------------
-                TARGET = {(0,6),(1,7),(2,6),(3,5),(2,4),(1,5)}
-
-                def is_target(stab):
-                    return {(v.x, v.y) for v in stab} == TARGET
-                # ----------------------------------------------
-
-                stabilizer_product_temp = []
-                seen = bdry
-                colors = [_get_color(bdry[0]), _get_color(bdry[1])]
-                temp_neigh = bdry
-                star_set = set(star)
-                seen_star_vertices = set(v for stab in bdry for v in stab if v in star_set)
-                seen_twice_star_vertices = set()
-                extracted_arm = _extract_stdw_arm(star, single_type_stabs)
-                print("extracted arm")
-                for el in extracted_arm:
-                    print(el)
-                extracted_arm_set = set(extracted_arm)
-                flag = True
-
-                found_anywhere = False  # DEBUG
-
-                for stab in patch_stabs:
-                    if {(v.x, v.y) for v in stab} == TARGET:
-                        print("TARGET IS IN patch_stabs")
-
-                for stab in single_type_stabs:
-                    if {(v.x, v.y) for v in stab} == TARGET:
-                        print("TARGET IS IN single_type_stabs")
-
-                while flag:
-                    print("---- NEW ITERATION ----")
-
-                    #temp_neigh_second = []
-                    #for el in temp_neigh:
-                    #    temp_neigh_second += self.find_neighboring_bdry_stabilizer(el, patch_stabs, single_type_stabs, True)
-                    temp_neigh_second = get_neighbors_of_set(temp_neigh, patch_stabs)
-                    print("temp neigh second", temp_neigh_second)
-
-                    if any(is_target(stab) for stab in temp_neigh_second):
-                        print("TARGET found in neighbors (temp_neigh_second)")
-                        found_anywhere = True
-
-                    # ---- seen filter ----
-                    before_seen = temp_neigh_second.copy()
-                    temp_neigh = [stab for stab in temp_neigh_second if not any(set(stab) == set(s) for s in seen)]
-                    print("after seen filter", temp_neigh)
-
-                    if any(is_target(stab) for stab in before_seen) and not any(is_target(stab) for stab in temp_neigh):
-                        print("TARGET removed by seen-filter")
-
-                    # ---- color filter ----
-                    before_color = temp_neigh.copy()
-                    #temp_neigh = [stab for stab in temp_neigh if assignment[tuple(stab)] in colors]
-                    temp_neigh = [
-                        stab
-                        for stab in temp_neigh
-                        if any(set(stab) == set(k) and assignment[k] in colors for k in assignment)
-                    ]
-                    print("after color filter", temp_neigh)
-
-                    if any(is_target(stab) for stab in before_color) and not any(is_target(stab) for stab in temp_neigh):
-                        print("TARGET removed by color filter")
-                        for stab in before_color:
-                            if is_target(stab):
-                                print("  its color:", assignment[tuple(stab)], "allowed:", colors)
-
-                    # ---- star constraint filter ----
-                    filtered = []
-                    for stab in temp_neigh:
-                        stab_set = set(stab)
-
-                        cond1 = bool(stab_set & (seen_star_vertices - extracted_arm_set))
-                        cond2 = bool(stab_set & seen_twice_star_vertices)
-
-                        if is_target(stab):
-                            print("TARGET at star-filter stage:")
-                            print("  intersects seen non-arm:", cond1)
-                            print("  intersects seen twice:", cond2)
-                            print("  seen_star_vertices:", {(v.x, v.y) for v in seen_star_vertices})
-                            print("  seen_twice_star_vertices:", {(v.x, v.y) for v in seen_twice_star_vertices})
-                            print("  extracted_arm:", {(v.x, v.y) for v in extracted_arm_set})
-                            print("  stab:", {(v.x, v.y) for v in stab})
-
-                        if not cond1 and not cond2:
-                            filtered.append(stab)
-                        else:
-                            if is_target(stab):
-                                print("TARGET REMOVED by star filter")
-
-                    temp_neigh = filtered
-
-                    if any(is_target(stab) for stab in temp_neigh):
-                        print("TARGET survives and is added!")
-
-                    seen += temp_neigh
-
-                    if not temp_neigh:
-                        flag = False
+                    overlap = sum(1 for node in stab if node in region_current)
+                    if len(stab) == 4:
+                        if overlap >= 3:
+                            region_stabs.append(stab)
+                    elif len(stab) == 6:
+                        if overlap >=5:
+                            region_stabs.append(stab)
                     else:
-                        newly_touched = set(v for stab in temp_neigh for v in stab if v in star_set)
-                        seen_twice_star_vertices |= newly_touched & seen_star_vertices & extracted_arm_set
-                        seen_star_vertices |= newly_touched
-                        stabilizer_product_temp += temp_neigh
+                        raise TQECError("internal error")
 
-                        if all(set(stab) & extracted_arm_set for stab in temp_neigh):
-                            flag = False
-
-                if not found_anywhere:
-                    print("TARGET NEVER APPEARED IN ANY NEIGHBOR SET")
-
-                stabilizer_product_temp = [
-                    stab for i, stab in enumerate(stabilizer_product_temp)
-                    if not any(set(stab) == set(s) for s in stabilizer_product_temp[:i])
-                ]
+                #filter the color
+                colors = [_get_color(bdry[0]), _get_color(bdry[1])]
+                stabilizer_product_temp = [stab for stab in region_stabs if assignment[tuple(stab)] in colors]
 
                 return stabilizer_product_temp
-            """
+
+            regions_start = _helper_split_patch_in_thirds(start_star, start_patch_stabs)
+            regions_end = _helper_split_patch_in_thirds(end_star, end_patch_stabs)
 
             #from bdry_1_from_start to middle
-            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_1_from_start, start_star, start_patch_stabs, start_single_type_stabs)
+            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_1_from_start, start_patch_stabs, regions_start)
             #from bdry_2_from_start to middle
-            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_2_from_start, start_star, start_patch_stabs, start_single_type_stabs)
+            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_2_from_start, start_patch_stabs, regions_start)
             #from bdry_1_from_end to middle
-            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_1_from_end, end_star, end_patch_stabs, end_single_type_stabs)
+            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_1_from_end, end_patch_stabs, regions_end)
             #from bdry_2_from_end to middle
-            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_2_from_end, end_star, end_patch_stabs, end_single_type_stabs)
+            stabilizer_product += _helper_walk_bdry_to_middle_star(bdry_2_from_end, end_patch_stabs, regions_end)
 
             all_paths_stars.append([start_star, end_star])
 
-            #add weight-2 operators based on stdw.
+            #remove duplicate stabilizers
+            stabilizer_product = [stab for i, stab in enumerate(stabilizer_product) if not any(set(stab) == set(s) for s in stabilizer_product[:i])]
+
+            #---------add weight-2 stabilizers according to the filling of the end/start patch------
             boundary_start = self.find_boundary_stabilizers(
-                    dct_patch_stabilizers, start_point, path[1], dct_single_type_stabs)
+                dct_patch_stabilizers, start_point, path[1], dct_single_type_stabs)
             boundary_end = self.find_boundary_stabilizers(
-                    dct_patch_stabilizers, end_point, path[-2], dct_single_type_stabs)
+                dct_patch_stabilizers, end_point, path[-2], dct_single_type_stabs)
             boundary_start_two = [el for el in boundary_start if len(el)==2]
             boundary_end_two = [el for el in boundary_end if len(el)==2]
 
             for stab_weight2 in boundary_start_two + boundary_end_two:
+                bool_lst = []
                 for node in stab_weight2:
-                    if self.count_stabilizer_appearances(node, stabilizer_product)%2 != 0:
-                        stabilizer_product.append(stab_weight2)
-                        break
+                    touches = self.count_stabilizer_appearances(node, stabilizer_product)
+                    bool_lst.append(touches % 2 != 0)
+                if any(bool_lst) and not all(bool_lst):
+                    raise TQECError("Expected all True or all False for boundary weight-2 stabilizer.")
+                if all(bool_lst):
+                    stabilizer_product.append(stab_weight2)
 
             #------------------remaining weight-2 stabilizers at bdries---------------------
             #check those weight-6 stabilizers that have qubits that are not touched
@@ -1120,12 +938,30 @@ class PrismGraph:
                 if len(once_touched) == 2 and once_touched[0].is_neighbour(once_touched[1]):
                     stabilizer_product.append(once_touched)
 
-            #remove duplicate stabilizers
-            stabilizer_product = [stab for i, stab in enumerate(stabilizer_product) if not any(set(stab) == set(s) for s in stabilizer_product[:i])]
             all_paths_stabilizer_product.append(stabilizer_product.copy())
-
 
             if testing:
                 self._test_stabilizer_product_timeslice(stabilizer_product, start_star, end_star)
 
-        return assignment, all_paths, all_paths_stabilizer_product, all_paths_stars #assignment is order dependent, so please return the specific assignment which is in general not unique
+        #---------determine whether the CS is X or Z type.---------
+        all_paths_stabilizer_product_x = []
+        all_paths_stabilizer_product_z = []
+
+        current_pipes = []
+        for pos1, pos2, attrs in self._graph.edges(data=True):
+            if pos1.z == z and pos2.z == z:
+                edge = attrs[self._EDGE_DATA_KEY]
+                if edge.kind.is_spatial:
+                    current_pipes.append(edge)
+        #just take the first prism pos, it is guaranteed by construction of the prism graph that it has to be consistent
+        #!split each possible path. if detached elements
+        basis = self._get_basis_from_pipes(start_point, current_pipes)
+        if basis == "Z": #turned around bc get basis is for vertical CS and here we have horizontal CS
+            all_paths_stabilizer_product_x = all_paths_stabilizer_product
+        elif basis == "X":
+            all_paths_stabilizer_product_z = all_paths_stabilizer_product
+        else:
+            raise TQECError("Internal error.")
+
+        #assignment is order dependent, so please return the specific assignment which is in general not unique
+        return assignment, all_paths, all_paths_stars, all_paths_stabilizer_product_x, all_paths_stabilizer_product_z
