@@ -52,6 +52,16 @@ class Position3DHex(Vec3DHex):
         """Check whether two points are next-nearest neighbours in the triangular lattice."""
         return bool(set(self.neighbors_spatial()) & set(other.neighbors_spatial()))
 
+    def next_nearest_neighbours_spatial(self) -> list[Position3DHex]:
+        """Find all spatial next-nearest neighbours of the point."""
+        own_neighbours = set(self.neighbors_spatial())
+        result = []
+        for n in own_neighbours:
+            for nn in n.neighbors_spatial():
+                if nn != self and nn not in own_neighbours and nn not in result:
+                    result.append(nn)
+        return result
+
     def shortest_path_spatial(self, other: Position3DHex) -> list[Position3DHex]:
         """Find shortest Path between two points."""
         path = [self]
