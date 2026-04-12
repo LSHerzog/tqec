@@ -577,8 +577,12 @@ class ZXPrism:
         stabilizers = ZXPrism.remove_low_overlap_stabilizers(stabilizers, nodes_triangle_bdry, d)
         stabilizers = ZXPrism.reduce_weight_six_to_four(stabilizers, reduce_bdry, nodes_triangle_bdry, d)
 
+        #remove duplicates (needed for d=3, d=5)
+        stabilizers = list({frozenset(lst): lst for lst in stabilizers}.values())
+
         if len(stabilizers) !=  (3*(d**2-1))/8:
-            raise TQECError("Internal issue with patch stabilizer construction.")
+            raise TQECError("Internal issue with patch stabilizer construction."
+                            f"{len(stabilizers)} instead of {(3*(d**2-1))/8}")
 
         return stabilizers, nodes_triangle_bdry
 

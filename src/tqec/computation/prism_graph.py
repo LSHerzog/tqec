@@ -49,6 +49,7 @@ class PrismGraph:
         self._graph: Graph[Position3DHex] = Graph()
         self._ports: dict[str, Position3DHex] = {}
         self.seed_star_op: dict[int, tuple] = {}
+        self.prism_pipes_to_data_qubits_full = {}
 
     @property
     def prisms(self) -> list[Prism]:
@@ -314,6 +315,10 @@ class PrismGraph:
 
         left_corner_lst = self.corners_timeslice(z, d, current_prisms)
 
+        #initialize a dictionary that maps the macro position of a prism or
+        # a pipe to the corresponding data qubts. Needed later for SE circuits
+        patch_pipe_to_data_qubits_dct = {}
+
         #place the current_prisms on the microscopic lattice
         #!TODO make this more efficient and avoid repeated calls of patch_stabilizers, cache the objects and translate them.
         stabilizers = []
@@ -331,6 +336,10 @@ class PrismGraph:
                 stabs, nodes_triangle_bdry = ZXPrism.patch_stabilizers(d, "upwards", left_corner, pipes_dirs_opp)
             else:
                 stabs, nodes_triangle_bdry = ZXPrism.patch_stabilizers(d, "downwards", left_corner, pipes_dirs_opp)
+            #add to patch_pipe_to_data_qubits_dct
+            data_qubits = list(set([p for stab in stabs for p in stab]))
+            patch_pipe_to_data_qubits_dct.update({prism: data_qubits})
+
             stabilizers += stabs
             dct_patch_stabilizers.update({prism: stabs})
             #prism_bdries.append(nodes_triangle_bdry)
@@ -401,8 +410,21 @@ class PrismGraph:
                             stabs_list.append(stab_temp.copy())
                             stab_temp = []
             dct_single_type_stabs.update({pipe: stabs_list.copy()})
+            stabs_list_2 = [stab for stab in stabs_list if len(stab)==2]
+            data_qubits = list(set([p for stab in stabs_list_2 for p in stab]))
+            patch_pipe_to_data_qubits_dct.update({pipe: data_qubits})
 
-
+        # remove pipe data qubits from the corresponding prism entries
+        # (the prisms should not contain the pipe qubits at the intersection)
+        for key in patch_pipe_to_data_qubits_dct.keys():  # noqa: PLC0206
+            if isinstance(key, PrismPipe):
+                pipe_qubits = set(patch_pipe_to_data_qubits_dct[key])
+                for prism_key in (key.u, key.v):
+                    if prism_key in patch_pipe_to_data_qubits_dct:
+                        patch_pipe_to_data_qubits_dct[prism_key] = [
+                            q for q in patch_pipe_to_data_qubits_dct[prism_key]
+                            if q not in pipe_qubits
+                        ]
 
         #connect the prisms according to current_pipes on the micro lattice -> distinction x, z
         stabilizers_x = stabilizers.copy()
@@ -426,6 +448,7 @@ class PrismGraph:
             else:
                 raise TQECError("Horizontal pipes have wrong colors for ver,hor.")
 
+        self.prism_pipes_to_data_qubits_full.update({z : patch_pipe_to_data_qubits_dct})
         return stabilizers_x, stabilizers_z, all_weight_2_stabs, dct_single_type_stabs, dct_patch_stabilizers
 
     @staticmethod
@@ -804,72 +827,80 @@ class PrismGraph:
 
         for path in all_paths:
             stabilizer_product = []
-            for idx, prism_pos in enumerate(path[1:-1], start=1):
-                # find boundary stabilizers between previous and current prism
-                boundary_left = self.find_boundary_stabilizers(
-                    dct_patch_stabilizers, prism_pos, path[idx-1], dct_single_type_stabs)
-                boundary_right = self.find_boundary_stabilizers(
-                    dct_patch_stabilizers, prism_pos, path[idx+1], dct_single_type_stabs)
-
-                stabilizer_product += [el for el in boundary_left if len(el)!=2] #add the boundary operators too
-                if idx == len(path)-2:
-                    stabilizer_product += [el for el in boundary_right if len(el)!=2]
-
-                # determine color of left boundary
-                color_left = None
-                for stab in boundary_left:
-                    if len(stab) != 2:
-                        stab_set = set(stab)
-                        for key, color in assignment.items():
-                            if set(key) == stab_set:
-                                color_left = color
-                                break
-                    if color_left is not None:
-                        break
-
-                # determine color of right boundary
-                color_right = None
-                for stab in boundary_right:
-                    if len(stab) != 2:
-                        stab_set = set(stab)
-                        for key, color in assignment.items():
-                            if set(key) == stab_set:
-                                color_right = color
-                                break
-                    if color_right is not None:
-                        break
-
-                # add all stabilizers of this prism with matching colors
-                prism_stabilizers = next(
-                    stabs for prism, stabs in dct_patch_stabilizers.items()
-                    if prism.position == prism_pos
+            if len(path) == 2:
+                start_point = path[0]
+                end_point   = path[-1]
+                boundary = self.find_boundary_stabilizers(
+                    dct_patch_stabilizers, start_point, end_point, dct_single_type_stabs
                 )
-                for stab in prism_stabilizers:
-                    stab_set = set(stab)
-                    for key, color in assignment.items():
-                        if set(key) == stab_set:
-                            if color in (color_left, color_right):
-                                stabilizer_product.append(stab)
+                stabilizer_product += [el for el in boundary if len(el) != 2]
+            else:
+                for idx, prism_pos in enumerate(path[1:-1], start=1):
+                    # find boundary stabilizers between previous and current prism
+                    boundary_left = self.find_boundary_stabilizers(
+                        dct_patch_stabilizers, prism_pos, path[idx-1], dct_single_type_stabs)
+                    boundary_right = self.find_boundary_stabilizers(
+                        dct_patch_stabilizers, prism_pos, path[idx+1], dct_single_type_stabs)
+
+                    stabilizer_product += [el for el in boundary_left if len(el)!=2] #add the boundary operators too
+                    if idx == len(path)-2:
+                        stabilizer_product += [el for el in boundary_right if len(el)!=2]
+
+                    # determine color of left boundary
+                    color_left = None
+                    for stab in boundary_left:
+                        if len(stab) != 2:
+                            stab_set = set(stab)
+                            for key, color in assignment.items():
+                                if set(key) == stab_set:
+                                    color_left = color
+                                    break
+                        if color_left is not None:
                             break
 
-                #determine which weight-2 operators are needed at the interfaces of two patches
-                if idx != len(path)-1 and idx!=1: #not at the bdry of the path
-                    weight_2_stabs = [el for el in boundary_left if len(el)==2]
-                    #go through the weight 2 stabilizers, at each data qubit,
-                    #at each data qubit, check how many data qubits are touched by a stabilizer in the product
-                    #add the weight 2 stabilizer to the product if odd number of stabilizer touch the qubit.
-                    for stab in weight_2_stabs:
-                        bool_lst = [] #bool for each data qubit, True if odd, False if even
-                        for qubit in stab:
-                            touches = self.count_stabilizer_appearances(qubit, stabilizer_product)
-                            if touches%2==0:
-                                bool_lst.append(False)
-                            else:
-                                bool_lst.append(True)
-                        if any(bool_lst) and not all(bool_lst):
-                            raise TQECError("Expected all True or all False, got a mix.")
-                        if all(bool_lst):
-                            stabilizer_product.append(stab)
+                    # determine color of right boundary
+                    color_right = None
+                    for stab in boundary_right:
+                        if len(stab) != 2:
+                            stab_set = set(stab)
+                            for key, color in assignment.items():
+                                if set(key) == stab_set:
+                                    color_right = color
+                                    break
+                        if color_right is not None:
+                            break
+
+                    # add all stabilizers of this prism with matching colors
+                    prism_stabilizers = next(
+                        stabs for prism, stabs in dct_patch_stabilizers.items()
+                        if prism.position == prism_pos
+                    )
+                    for stab in prism_stabilizers:
+                        stab_set = set(stab)
+                        for key, color in assignment.items():
+                            if set(key) == stab_set:
+                                if color in (color_left, color_right):
+                                    stabilizer_product.append(stab)
+                                break
+
+                    #determine which weight-2 operators are needed at the interfaces of two patches
+                    if idx != len(path)-1 and idx!=1: #not at the bdry of the path
+                        weight_2_stabs = [el for el in boundary_left if len(el)==2]
+                        #go through the weight 2 stabilizers, at each data qubit,
+                        #at each data qubit, check how many data qubits are touched by a stabilizer in the product
+                        #add the weight 2 stabilizer to the product if odd number of stabilizer touch the qubit.
+                        for stab in weight_2_stabs:
+                            bool_lst = [] #bool for each data qubit, True if odd, False if even
+                            for qubit in stab:
+                                touches = self.count_stabilizer_appearances(qubit, stabilizer_product)
+                                if touches%2==0:
+                                    bool_lst.append(False)
+                                else:
+                                    bool_lst.append(True)
+                            if any(bool_lst) and not all(bool_lst):
+                                raise TQECError("Expected all True or all False, got a mix.")
+                            if all(bool_lst):
+                                stabilizer_product.append(stab)
 
             #----------------star ops---------------------
             start_point = path[0]
