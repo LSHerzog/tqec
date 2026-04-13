@@ -2,9 +2,12 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import sinter
 import stim
+import tesseract_decoder
 
 from tqec.computation.pipe_prism import PrismPipe, PrismPipeKind
 from tqec.computation.prism import BasisPrism, Port, Position3DHex, Prism, ZXPrism
@@ -276,15 +279,15 @@ class SyndromeExtractionStimCC:
             #star_idx:int,
             logical_operator: list[Position3DHex],
             rounds,
-            after_clifford_depolarization: float,
-            before_round_data_depolarization: float,
-            after_reset_flip_probability: float,
-            before_measure_flip_probability: float,) -> stim.Circuit:
+            p_init: float,
+            p_meas: float,
+            p_idle: float,
+            p_gate2: float) -> stim.Circuit:
         """Create a stim circuit of the object."""
         #! currently no horizontal correlation surfaces possible yet!
         #! summarize input from correlationsurface directly!
-        #! right now, operator_patch only one position, i.e. only straight vertical operators possible
-        #! type is "z" or "x"
+
+        #! logical_operator must be an operator on a full patch! otherwise not all detectors created.
 
         circuit = stim.Circuit()
 
@@ -300,8 +303,10 @@ class SyndromeExtractionStimCC:
                 mapped_data_qubits = [self.mapping[el] for el in data_qubits]
                 if zpm.p == BasisPrism.Z:
                     circuit.append("R", mapped_data_qubits)
+                    circuit.append("X_ERROR", mapped_data_qubits, p_init)
                 elif zpm.p == BasisPrism.X:
                     circuit.append("RX", mapped_data_qubits)
+                    circuit.append("Z_ERROR", mapped_data_qubits, p_init)
             #circuit.append("TICK", [])
 
             #retrieve X and Z tanner graph + coloring for current time step
@@ -316,34 +321,66 @@ class SyndromeExtractionStimCC:
 
             stabs_x, stabs_z = self.result_dct[z]["stabs"]
 
+            #!This must be adapted for larger structures where the `active` ancillas may differ per z layer
+            n_ancillas = len(list(self.mapping_ancillas))
+            meas_per_round = 2 * n_ancillas  # MX block + M block per round
 
-            for _ in range(rounds):
+
+            for r in range(rounds):
                 #! make this a separate method such that you can interchange the syndrome extraction schemes
                 mapped_ancilla_qubits = self.mapping_ancillas.values()
                 #--------X syndrome extraction----------
                 #initialize ancillas in X
                 circuit.append("RX", mapped_ancilla_qubits)
+                circuit.append("Z_ERROR", mapped_ancilla_qubits, p_init)
                 circuit.append("TICK", [])
                 for edges in edge_coloring_z.values():
                     #from labels "c+int" find the corresponding stabilizer and the ancilla label
                     #"q+int" describes data qubit label
                     #data qubit label = target, ancilla qubit label = control
+                    active_qubits = set() #for idling noise
                     for edge in edges:
                         q_int = int(edge[0][1:])
                         c_int = int(edge[1][1:])
                         corresponding_stab = self.canonical(stabs_x[c_int])
                         ancilla_int = self.mapping_ancillas[corresponding_stab]
                         circuit.append("CNOT", [ancilla_int, q_int])
+                        circuit.append("DEPOLARIZE2", [ancilla_int, q_int], p_gate2)
+                        active_qubits.add(q_int)
+                        active_qubits.add(ancilla_int)
+                    #!ADAPT IF NOT ALL QUBITS ARE USED IN A z LAYER
+                    #idle noise
+                    all_qubits = set(self.mapping.values()) | set(self.mapping_ancillas.values())
+                    idle_qubits = [q for q in all_qubits if q not in active_qubits]
+                    if idle_qubits:
+                        circuit.append("DEPOLARIZE1", idle_qubits, p_idle)
                     circuit.append("TICK", [])
                 #measure all ancillas in X
+                circuit.append("Z_ERROR", mapped_ancilla_qubits, p_meas)
                 circuit.append("MX", mapped_ancilla_qubits)
                 circuit.append("TICK", [])
 
+                #-------x stabilizer detectors---------
+                for anc_idx in range(n_ancillas):
+                    rec_current = -(n_ancillas - anc_idx)
+                    if r == 0:
+                        # first round: only deterministic if initialized in X basis
+                        if zpm.p == BasisPrism.X:
+                            circuit.append("DETECTOR", [stim.target_rec(rec_current)])
+                    else:
+                        # middle rounds: always valid regardless of zpm.p
+                        rec_prev = rec_current - meas_per_round
+                        circuit.append("DETECTOR", [
+                            stim.target_rec(rec_current),
+                            stim.target_rec(rec_prev)
+                        ])
 
                 #--------Z syndrome extraction----------
                 #initialize ancillas in Z
                 circuit.append("R", mapped_ancilla_qubits)
+                circuit.append("X_ERROR", mapped_ancilla_qubits, p_init)
                 circuit.append("TICK", [])
+                active_qubits = set() #for idling noise
                 for edges in edge_coloring_z.values():
                     #from labels "c+int" find the corresponding stabilizer and the ancilla label
                     #"q+int" describes data qubit label
@@ -354,10 +391,36 @@ class SyndromeExtractionStimCC:
                         corresponding_stab = self.canonical(stabs_z[c_int])
                         ancilla_int = self.mapping_ancillas[corresponding_stab]
                         circuit.append("CNOT", [q_int, ancilla_int])
+                        circuit.append("DEPOLARIZE2", [q_int, ancilla_int], p_gate2)
+                        active_qubits.add(q_int)
+                        active_qubits.add(ancilla_int)
+                    #!ADAPT IF NOT ALL QUBITS ARE USED IN A z LAYER
+                    #idle noise
+                    all_qubits = set(self.mapping.values()) | set(self.mapping_ancillas.values())
+                    idle_qubits = [q for q in all_qubits if q not in active_qubits]
+                    if idle_qubits:
+                        circuit.append("DEPOLARIZE1", idle_qubits, p_idle)
                     circuit.append("TICK", [])
                 #measure all ancillas in Z
+                circuit.append("X_ERROR", mapped_ancilla_qubits, p_meas)
                 circuit.append("M", mapped_ancilla_qubits)
                 circuit.append("TICK", [])
+
+                #-------z stabilizer detectors---------
+                for anc_idx in range(n_ancillas):
+                    rec_current = -(n_ancillas - anc_idx)
+                    if r == 0:
+                        # first round: only deterministic if initialized in Z basis
+                        if zpm.p == BasisPrism.Z:
+                            circuit.append("DETECTOR", [stim.target_rec(rec_current)])
+                    else:
+                        # middle rounds: always valid regardless of zpm.p
+                        rec_prev = rec_current - meas_per_round
+                        circuit.append("DETECTOR", [
+                            stim.target_rec(rec_current),
+                            stim.target_rec(rec_prev)
+                        ])
+
 
             offset_start = circuit.num_measurements
 
@@ -385,8 +448,10 @@ class SyndromeExtractionStimCC:
 
             # only measure the star operator qubits
             if zpm.m == BasisPrism.Z:
+                circuit.append("X_ERROR", obs_qubits, p_meas)
                 circuit.append("M", obs_qubits)
             elif zpm.m == BasisPrism.X:
+                circuit.append("Z_ERROR", obs_qubits, p_meas)
                 circuit.append("MX", obs_qubits)
 
             total = circuit.num_measurements
@@ -399,17 +464,46 @@ class SyndromeExtractionStimCC:
 
             circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
 
+            #-------final round of detectors------
+            if zpm.m == BasisPrism.Z:
+                for anc_idx, (stab, ancilla_int) in enumerate(self.mapping_ancillas.items()):
+                    # last M block ended at offset_start, data meas came after
+                    # last Z ancilla meas for anc_idx:
+                    # it is anc_idx-th measurement of the last M block
+                    # M block ended at offset_start, so offset from total:
+                    rec_last_anc = -(total - offset_start + n_ancillas - anc_idx)
+                    # data qubit meas for this stabilizer's support
+                    stab_data_qubits = [self.mapping[q] for q in stab]
+                    data_targets = []
+                    for q in stab_data_qubits:
+                        if q in obs_qubits:
+                            pos_in_obs = obs_qubits.index(q)
+                            data_targets.append(stim.target_rec(-(total - offset_start - pos_in_obs)))
+                    circuit.append("DETECTOR", [stim.target_rec(rec_last_anc)] + data_targets)
+
+            elif zpm.m == BasisPrism.X:
+                for anc_idx, (stab, ancilla_int) in enumerate(self.mapping_ancillas.items()):
+                    rec_last_anc = -(total - offset_start + n_ancillas - anc_idx)
+                    stab_data_qubits = [self.mapping[q] for q in stab]
+                    data_targets = []
+                    for q in stab_data_qubits:
+                        if q in obs_qubits:
+                            pos_in_obs = obs_qubits.index(q)
+                            data_targets.append(stim.target_rec(-(total - offset_start - pos_in_obs)))
+                    circuit.append("DETECTOR", [stim.target_rec(rec_last_anc)] + data_targets)
+
+
         return circuit
 
 
 
     def run_all(self,
-            logical_operator,
+            logical_operator: list[Position3DHex],
             rounds,
-            after_clifford_depolarization: float,
-            before_round_data_depolarization: float,
-            after_reset_flip_probability: float,
-            before_measure_flip_probability: float,):
+            p_init: float,
+            p_meas: float,
+            p_idle: float,
+            p_gate2: float):
         """Run all methods."""
         self.retrieve_stabilizers_operators()
         self.create_mapping()
@@ -419,8 +513,82 @@ class SyndromeExtractionStimCC:
 
         circuit = self.create_stim_circuit_naive(
             logical_operator,
-            rounds,after_clifford_depolarization,
-            before_round_data_depolarization,
-            after_reset_flip_probability,
-            before_measure_flip_probability)
+            rounds,
+            p_init,
+            p_meas,
+            p_idle,
+            p_gate2)
         return circuit
+
+
+
+
+
+
+decoder_name = "tesseract"
+decoder_dict = tesseract_decoder.make_tesseract_sinter_decoders_dict()
+
+def run_experiment_sinter(
+        circuit_builders: list,
+        logical_operators: list,
+        rounds: int,
+        p_values: list[float],
+        num_workers: int = 2,
+        max_shots: int = 10_000,
+        max_errors: int = 100,
+) -> list[sinter.TaskStats]:
+    """
+    Run a logical error rate experiment for a range of noise levels p using sinter + tesseract.
+    All noise parameters are set to p.
+    Loops over circuit_builders, logical_operators, and p_values.
+    circuit_builders and logical_operators are assumed to be paired (same index = same code).
+    """
+
+    tasks = [
+        sinter.Task(
+            circuit=circuit_builder.run_all(
+                logical_operator=logical_operator,
+                rounds=rounds,
+                p_init=p,
+                p_gate2=p,
+                p_meas=p,
+                p_idle=p,
+            ),
+            json_metadata={'p': p, 'rounds': rounds, 'code_idx': idx, 'd': circuit_builder.d},
+        )
+        for idx, (circuit_builder, logical_operator) in enumerate(zip(circuit_builders, logical_operators))
+        for p in p_values
+    ]
+
+    stats = sinter.collect(
+        num_workers=num_workers,
+        tasks=tasks,
+        custom_decoders=decoder_dict,
+        decoders=[decoder_name],
+        max_shots=max_shots,
+        max_errors=max_errors,
+        print_progress=True,
+    )
+
+    return stats
+
+
+def plot_experiment_sinter(stats: list[sinter.TaskStats], d_lst: list[int]):
+    """Plot sinter tasks."""
+    fig, ax = plt.subplots()
+
+    sinter.plot_error_rate(
+        ax=ax,
+        stats=stats,
+        x_func=lambda stat: stat.json_metadata['p'],
+        group_func=lambda stat: f"d={d_lst[stat.json_metadata['code_idx']]}",
+    )
+
+    ax.set_xlabel("Physical error rate p")
+    ax.set_ylabel("Logical error rate")
+    ax.set_title("Logical error rate vs physical error rate")
+    ax.loglog()
+    ax.grid(True, which='both', ls='--', alpha=0.5)
+    ax.legend(title="Code distance")
+    plt.tight_layout()
+    plt.show()
