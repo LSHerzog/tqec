@@ -50,6 +50,8 @@ class PrismGraph:
         self._ports: dict[str, Position3DHex] = {}
         self.seed_star_op: dict[int, tuple] = {}
         self.prism_pipes_to_data_qubits_full = {}
+        #per key=d, collect an origin of the whole diagram, both macro and micro corner.
+        self._global_micro_origin: dict[int, tuple[Position3DHex, Position3DHex]] = {}
 
     @property
     def prisms(self) -> list[Prism]:
@@ -122,27 +124,53 @@ class PrismGraph:
         write_prism_graph_to_dae_file(self, buf, spacing = 3.0)
         return display_collada_model(buf.getvalue())  # pass bytes directly
 
+    def _get_or_init_global_origin(self, d: int) -> tuple[Position3DHex, Position3DHex]:
+        """Return (macro_ref, micro_centroid_ref) for the whole diagram.
+
+        The macro_ref is the lexicographically smallest (x, y) position among
+        all prisms in the graph. Its microscopic centroid is fixed at the same
+        formula currently used in corners_timeslice, and cached for reuse.
+        """
+        if d in self._global_micro_origin:
+            return self._global_micro_origin[d]
+
+        # Pick the canonical macro reference — smallest (x, y) in the whole graph.
+        all_positions = [pos for pos, _ in self._graph.nodes(data=True)]
+        macro_ref = min(all_positions, key=lambda p: (p.x, p.y))
+
+        # Compute micro centroid
+        # but at z=0 (z is stripped and re-added per layer later).
+        if macro_ref.x % 2 == 0:
+            micro_ref = Position3DHex(x=d - 1, y=0, z=0)
+        else:
+            micro_ref = Position3DHex(x=d - 1, y=-d - 1, z=0)
+
+        self._global_micro_origin[d] = (macro_ref, micro_ref)
+        return macro_ref, micro_ref
+
     def corners_timeslice(self, z: int, d: int, current_prisms):
         """Find the corners to build stabilizers from them for current timeslice."""
-        #find microscopic centroid for 1st prism (the first prism it the "origin")
-        if current_prisms[0].position.x % 2 == 0:
-            #upwards
-            centroid = Position3DHex(d-1, 0, z)
-        else:
-            #downwards
-            centroid = Position3DHex(d-1, -d-1, z)
-        centroids = [centroid]
+        macro_ref, micro_ref_z0 = self._get_or_init_global_origin(d)
+        # Reattach the current z to the reference centroid.
+        micro_ref = Position3DHex(micro_ref_z0.x, micro_ref_z0.y, z)
+        macro_ref_at_z = Position3DHex(macro_ref.x, macro_ref.y, z)
 
-        #find for each prism position the microscopic centroid position
-        for prism in current_prisms[1:]:
-            path = current_prisms[0].position.shortest_path_spatial(prism.position)
-            current_centroid = centroid
-            current_macro = current_prisms[0].position
-            for macro_next in path[1:]:
-                #yields next centroid from current centroid and current macro and el
-                current_centroid = current_macro.macro_diff_to_micro_diff(d, current_centroid, macro_next)
-                current_macro = macro_next #overwrite for neighbor consistentcy
-            centroids.append(current_centroid)
+        centroids = []
+        for prism in current_prisms:
+            target = Position3DHex(prism.position.x, prism.position.y, z)
+            if target == macro_ref_at_z:
+                centroids.append(micro_ref)
+            else:
+                # Walk from the global macro_ref to this prism's (x,y).
+                path = macro_ref_at_z.shortest_path_spatial(target)
+                current_centroid = micro_ref
+                current_macro   = macro_ref_at_z
+                for macro_next in path[1:]:
+                    current_centroid = current_macro.macro_diff_to_micro_diff(
+                        d, current_centroid, macro_next
+                    )
+                    current_macro = macro_next
+                centroids.append(current_centroid)
 
         left_corner_lst = [] #left_corner depends on x even or odd in macro
         for macro, micro_centroid in zip(current_prisms, centroids):
@@ -198,6 +226,41 @@ class PrismGraph:
                     return "Z"
         return "XZ"  # fallback for isolated prisms with no pipes, for them it's both X and Z
 
+    def _walk_star_op_to_prism(
+        self,
+        star_op: list[Position3DHex],
+        from_prism: Prism,
+        to_prism: Prism,
+        z: int,
+        d: int,
+    ) -> list[Position3DHex]:
+        """Walk a star operator from from_prism to to_prism via consecutive reflections.
+
+        Both from_prism and to_prism must share the same z.
+        Returns the star operator sitting on to_prism.
+
+        #!DEDUPLICATE
+        """
+        path = from_prism.position.shortest_path_spatial(to_prism.position)
+        path_prisms = [Prism(pos, ZXPrism(BasisPrism.N, BasisPrism.N), "") for pos in path]
+        left_corner_lst = self.corners_timeslice(z, d, path_prisms)
+
+        star_op_tmp = star_op.copy()
+        for idx, (pos, corner) in enumerate(zip(path, left_corner_lst)):
+            triangle_type = "upwards" if pos.x % 2 == 0 else "downwards"
+            nodes_triangle_bdry = ZXPrism.patch_triangle_bdry(d, corner, triangle_type)
+            if idx + 1 < len(path):
+                pipe = PrismPipe(
+                    path_prisms[idx],
+                    path_prisms[idx + 1],
+                    PrismPipeKind(hor=BasisPrism.N, ver=BasisPrism.N),
+                )
+                direction = pipe.direction_connecting_bdry()
+                star_op_tmp = ZXPrism.reflect_star_operator(
+                    star_op_tmp, direction, triangle_type, nodes_triangle_bdry
+                )
+        return star_op_tmp
+
     def star_operator_timeslice(self, z:int, d:int):
         """Generate the star operator for a time slice."""
         #current timeslice
@@ -228,6 +291,18 @@ class PrismGraph:
                 cached_prism.kind,
                 cached_prism.label,
             )
+
+            # If the cached init_prism is not present in this timeslice, walk the
+            # star operator from the cached (phantom) position to the first actual
+            # prism in this layer so that init_prism and star_op_init are consistent
+            # with what exists at layer z.
+            current_macro_positions = {p.position for p in current_prisms}
+            if init_prism.position not in current_macro_positions:
+                actual_init = current_prisms[0]
+                star_op_init = self._walk_star_op_to_prism(
+                    star_op_init, init_prism, actual_init, z, d
+                )
+                init_prism = actual_init
 
         else:
             #generate initial star operator
@@ -529,27 +604,28 @@ class PrismGraph:
         return assignment
 
     def find_all_linear_paths_timeslice(self, z: int) -> list[list[PrismPipe]]:
-        """Find all simple linear paths through the prism graph.
+        """Find all simple linear paths through the prism graph restricted to a fixed z slice."""
+        # Restrict to nodes in the given z-slice
+        nodes_in_slice = [n for n in self._graph.nodes() if n.z == z]
+        subgraph = self._graph.subgraph(nodes_in_slice)
 
-        This is needed to find all possible horizontal correlation surfaces of a slice.
-        """
-        # Find all nodes that are endpoints (degree 1) or isolated (degree 0)
-        # Paths must start and end at such nodes
-        endpoints = [n for n, deg in self._graph.degree() if deg == 1 and n.z == z]
+        # Find endpoints in the subgraph
+        endpoints = [n for n, deg in subgraph.degree() if deg == 1]
 
-        # If no endpoints exist (e.g. pure cycle), fall back to all nodes
+        # If no endpoints exist (e.g. pure cycle), fall back to all nodes in slice
         if not endpoints:
-            endpoints = list(self._graph.nodes())
+            endpoints = list(subgraph.nodes())
 
         all_paths: list[list[PrismPipe]] = []
 
         for source in endpoints:
             for target in endpoints:
-                if source >= target:  # avoid duplicates and self-paths
+                if source >= target:
                     continue
-                for node_path in nx.all_simple_paths(self._graph, source, target):
+                for node_path in nx.all_simple_paths(subgraph, source, target):
                     all_paths.append(node_path)
-                    break #only one node path (more will not be possible anyways)
+                    break  # only one path needed
+
         return all_paths
 
     @staticmethod
