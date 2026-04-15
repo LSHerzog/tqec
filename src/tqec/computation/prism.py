@@ -651,6 +651,49 @@ class ZXPrism:
 
         d = len(nodes_triangle_bdry["a"])
 
+        if d==3:
+            star_op = []
+            for dir in ["a","b","c"]:
+                star_op.append(nodes_triangle_bdry[dir][1])#element with index 1 is middle  # noqa: PERF401
+            return star_op
+        elif d == 5:
+            star_op = []
+            bdry_nodes = [node for lst in nodes_triangle_bdry.values() for node in lst]
+
+            first_layer = []
+
+            # Step 1: middle nodes + one interior neighbor each
+            for dir in ["a", "b", "c"]:
+                middle_node = nodes_triangle_bdry[dir][2]
+                star_op.append(middle_node)
+
+                for neigh in middle_node.neighbors_spatial():
+                    if (
+                        neigh not in bdry_nodes
+                        and ZXPrism.check_within_bdrys(neigh, nodes_triangle_bdry, d)
+                    ):
+                        first_layer.append(neigh)
+                        star_op.append(neigh)
+                        break
+            # Step 2: find common neighbor (intersection point)
+            neighbor_sets = []
+            for node in first_layer:
+                neighs = set(node.neighbors_spatial())
+                # optionally exclude boundary + already used nodes
+                neighs = {n for n in neighs if n not in bdry_nodes}
+                neighbor_sets.append(neighs)
+            # Step 3: intersection of all three sets
+            common = set.intersection(*neighbor_sets)
+
+            if not common:
+                raise TQECError("No common intersection found for d=5 star operator.")
+
+            center = next(iter(common))
+            star_op.append(center)
+
+            return star_op
+
+
         def walk(start: Position3DHex, bdry: str) -> list[Position3DHex]:
             if triangle_type == "upwards":
                 shift_fn = {

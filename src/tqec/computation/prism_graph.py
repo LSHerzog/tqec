@@ -755,6 +755,7 @@ class PrismGraph:
     def _helper_bdry_start_end(single_type_stabs, star, patch_stabs):
         bdry_bdry = [stab for stab in single_type_stabs if len(stab) == 3 or len(stab) == 5]
         assert len(bdry_bdry) == 2, f"Internal error. {bdry_bdry}"
+        d = len(single_type_stabs)
         bdry_1 = []
         temp_neigh = [bdry_bdry[0]]
         seen = [bdry_bdry[0]]
@@ -767,11 +768,16 @@ class PrismGraph:
         bdry_2 = []
         temp_neigh = [bdry_bdry[1]]
         seen = [bdry_bdry[1]]
-        while not set([v for stab in temp_neigh for v in stab]) & set(star):
+        if d == 3:
+            #the structure for d=3 is very peculiar and i think very sensible to changes in the code
             temp_neigh = PrismGraph.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
-            temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
-            seen += temp_neigh
-            bdry_2 += temp_neigh
+            bdry_2 += [neigh for neigh in temp_neigh if set(neigh) not in [set(el) for el in bdry_1]]
+        else:
+            while not set([v for stab in temp_neigh for v in stab]) & set(star):
+                temp_neigh = PrismGraph.find_neighboring_bdry_stabilizer(temp_neigh[0], patch_stabs, single_type_stabs)
+                temp_neigh = [stab for stab in temp_neigh if not any(set(stab) == set(s) for s in seen)]
+                seen += temp_neigh
+                bdry_2 += temp_neigh
 
         return bdry_1, bdry_2
 
@@ -836,8 +842,16 @@ class PrismGraph:
                 raise TQECError("internal error")
 
         #filter the color
-        colors = [PrismGraph._get_color(bdry[0], assignment), PrismGraph._get_color(bdry[1], assignment)]
-        stabilizer_product_temp = [stab for stab in region_stabs if assignment[tuple(stab)] in colors]
+        d = int((8 * len(patch_stabs) / 3 + 1) ** 0.5)
+        if d == 3:
+            if len(bdry)==1:
+                colors = [PrismGraph._get_color(bdry[0], assignment)]
+                stabilizer_product_temp = [stab for stab in region_stabs if assignment[tuple(stab)] in colors]
+            else:
+                raise TQECError("d=3 edge case error.")
+        else:
+            colors = [PrismGraph._get_color(bdry[0], assignment), PrismGraph._get_color(bdry[1], assignment)]
+            stabilizer_product_temp = [stab for stab in region_stabs if assignment[tuple(stab)] in colors]
 
         return stabilizer_product_temp
 
