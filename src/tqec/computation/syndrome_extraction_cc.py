@@ -9,9 +9,11 @@ import sinter
 import stim
 import tesseract_decoder
 
+from tqec.utils.exceptions import TQECError
+
 from tqec.computation.pipe_prism import PrismPipe, PrismPipeKind
 from tqec.computation.prism import BasisPrism, Port, Position3DHex, Prism, ZXPrism
-from tqec.computation.prism_graph import PrismGraph
+from tqec.computation.prism_graph import PrismGraph, StabilizerProductResult
 
 
 @dataclass(frozen=True)
@@ -93,11 +95,28 @@ class SyndromeExtractionStimCC:
         for z in self.z_values:
             stabs_x, stabs_z, _, dct_single_type_stabs, dct_patch_stabilizers = self.prism_graph.stabilizers_timeslice(z, self.d)
             result_dct[z].update({"stabs": [stabs_x, stabs_z]})
-            if self.d > 5: #not possible for d=3, d=5
-                star_ops_x, star_ops_z = self.prism_graph.star_operator_timeslice(z, self.d)
+            #if self.d > 5: #not possible for d=3, d=5
+            star_ops_x, star_ops_z = self.prism_graph.star_operator_timeslice(z, self.d)
+            try:
                 result = self.prism_graph.stabilizer_product_timeslice(z, self.d, dct_single_type_stabs, dct_patch_stabilizers, testing = True)
-                result_dct[z].update({"star": [star_ops_x, star_ops_z]})
-                result_dct[z].update({"product": result})
+            except TQECError as e:
+                #for d=3 the 3 coloring cannot be created for a single patch as it does not contain weight 6 stabilizers
+                #but we do not care and skip this because for a single patch there's no stabilizer product anyway
+                if "No weight-6 stabilizer found to seed the 3-coloring." not in str(e):
+                    raise TQECError("There is some issue with the stabilizer product construction.")
+                else:
+                    result = StabilizerProductResult(
+                        assignment={},
+                        paths_x=[],
+                        paths_z=[],
+                        stars_x=[],
+                        stars_z=[],
+                        stabilizer_products_x=[],
+                        stabilizer_products_z=[],
+                    )
+
+            result_dct[z].update({"star": [star_ops_x, star_ops_z]})
+            result_dct[z].update({"product": result})
             #result_dct[z].update({"assignment": self.prism_graph.prism_pipes_to_data_qubits_full})
         self.result_dct = result_dct
 
@@ -274,6 +293,93 @@ class SyndromeExtractionStimCC:
         #note that prism_pipes_to_data_qubits_full and prsim_pipes_to_ZPM should be used together in create_stim_circuit
         self.prism_pipes_to_ZPM = prism_pipes_to_ZPM
 
+    def assign_qubit_coords(self, scale: int = 20):
+        """Create crumble positions."""
+        self.qubit_coords = {}
+
+        # --- data qubits ---
+        for pos, q in self.mapping.items():
+            cx, cy, _ = pos.to_euclidean(scale=1.0)
+
+            ix = int(round(cx * scale))
+            iy = int(round(cy * scale))
+
+            self.qubit_coords[q] = (ix, iy)
+
+        # --- ancillas ---
+        for stab, anc in self.mapping_ancillas.items():
+            coords = [
+                Position3DHex(p.x, p.y, 0).to_euclidean(scale=1.0)[:2]
+                for p in stab
+            ]
+
+            cx = sum(c[0] for c in coords) / len(coords)
+            cy = sum(c[1] for c in coords) / len(coords)
+
+            ix = int(round(cx * scale))
+            iy = int(round(cy * scale))
+
+            self.qubit_coords[anc] = (ix, iy)
+
+    def add_qubit_coords_to_circuit(self, circuit: stim.Circuit) -> stim.Circuit:
+        """Prepend QUBIT_COORDS to the circuit."""
+        coord_circuit = stim.Circuit()
+
+        for q, (x, y) in sorted(self.qubit_coords.items()):
+            coord_circuit.append("QUBIT_COORDS", [q], [x, y])
+
+        coord_circuit += circuit
+        return coord_circuit
+
+    @staticmethod
+    def get_zpm_for_stab(
+        stab,
+        prism_pipes_data_temp,
+        prism_pipes_zpm_temp,
+        stabs_x,
+        stabs_z,
+    ):
+        """Assign ZPM value from given stab."""
+        stab_set = set(stab)
+
+        #normalize to z=0
+        stabs_x = [
+            [Position3DHex(el.x, el.y, 0) for el in stab]
+            for stab in stabs_x
+        ]
+        stabs_z = [
+            [Position3DHex(el.x, el.y, 0) for el in stab]
+            for stab in stabs_z
+        ]
+
+        in_x = any(stab_set == set(s) for s in stabs_x)
+        in_z = any(stab_set == set(s) for s in stabs_z)
+
+        # normalize pipe vs prism search space
+        if in_x and in_z:
+            allowed_types = (Prism,)
+        else:
+            allowed_types = (PrismPipe,)
+
+        print("in_z", in_z)
+        print("in_x", in_x)
+        print("allowed_types", allowed_types)
+
+        for pipe_prism, data_qubits in prism_pipes_data_temp.items():
+
+            if not isinstance(pipe_prism, allowed_types):
+                continue
+
+            dq_set = {
+                Position3DHex(q.x, q.y, 0)
+                for q in data_qubits
+            }
+
+            if stab_set & dq_set:
+                return prism_pipes_zpm_temp[pipe_prism]
+
+        return None
+
     def create_stim_circuit_naive(
             self,
             rounds,
@@ -292,11 +398,19 @@ class SyndromeExtractionStimCC:
         horizontal_cs_x_list = []
         horizontal_cs_z_list = []
 
-        for z in self.z_values:
+        for s, z in enumerate(self.z_values):
             print(f"building circuit for z={z}...")
             #use both prism_pipes_to_ZPM and prism_pipes_to_data_qubits_full
             prism_pipes_zpm_temp = self.prism_pipes_to_ZPM[z]
             prism_pipes_data_temp = self.prism_graph.prism_pipes_to_data_qubits_full[z]
+
+            print("prism_pipes_zpm_temp", prism_pipes_zpm_temp)
+            print("prism_pipes_data_temp", prism_pipes_data_temp)
+
+            if s != 0:
+                meas_per_round_previous = meas_per_round #store the number of meas per roudn from previous 
+            else:
+                meas_data_qubits = 0 #initialize to 0 #number of data qubits that were measured zpm.m
 
             #initialize
             for prism_pipe in prism_pipes_zpm_temp.keys():
@@ -330,13 +444,13 @@ class SyndromeExtractionStimCC:
             print("len stabs_z", len(stabs_z))
 
             #extract stabilizer product (=horizontal correlation surface) if there is one or more of them in current z
-            if self.d>5:
-                result = self.result_dct[z]["product"]
-                star_ops_x, star_ops_z = self.result_dct[z]["star"]
-            else:
-                print("No horizontal CS available for d<=5. your circuit will be wrong.")
-                star_ops_x, star_ops_z = None, None
-                result = None
+            #if self.d>5:
+            result = self.result_dct[z]["product"]
+            star_ops_x, star_ops_z = self.result_dct[z]["star"]
+            #else:
+            #    print("No horizontal CS available for d<=5. your circuit will be wrong.")
+            #    star_ops_x, star_ops_z = None, None
+            #    result = None
 
 
             #!This must be adapted for larger structures where the `active` ancillas may differ per z layer
@@ -364,19 +478,19 @@ class SyndromeExtractionStimCC:
                 horizontal_cs_x = []#measurement labels
                 stabilizer_products_x = None
                 stabilizer_product_x_ancillas = None
-                if self.d>5:
-                    stabilizer_products_x = result.stabilizer_products_x
-                    if len(stabilizer_products_x)!=0:
-                        stabilizer_products_x = stabilizer_products_x[0]#!HARDCODED TO FIRST PATH
-                        stabilizer_products_x = [[Position3DHex(el.x, el.y, 0) for el in stabilizer] for stabilizer in stabilizer_products_x]
-                        stabilizer_products_x = [self.canonical(stab) for stab in stabilizer_products_x]
+                #if self.d>5:
+                stabilizer_products_x = result.stabilizer_products_x
+                if len(stabilizer_products_x)!=0:
+                    stabilizer_products_x = stabilizer_products_x[0]#!HARDCODED TO FIRST PATH
+                    stabilizer_products_x = [[Position3DHex(el.x, el.y, 0) for el in stabilizer] for stabilizer in stabilizer_products_x]
+                    stabilizer_products_x = [self.canonical(stab) for stab in stabilizer_products_x]
 
-                        stabilizer_product_x_ancillas = [] #collect the ancilla labels for those stabilizers
-                        for stab in stabilizer_products_x:
-                            corresponding_stab = self.canonical(stab)
-                            corresponding_stab = [Position3DHex(x = el.x, y = el.y, z=0) for el in corresponding_stab]
-                            ancilla_int = mapping_ancillas_filtered[tuple(corresponding_stab)]
-                            stabilizer_product_x_ancillas.append(ancilla_int)
+                    stabilizer_product_x_ancillas = [] #collect the ancilla labels for those stabilizers
+                    for stab in stabilizer_products_x:
+                        corresponding_stab = self.canonical(stab)
+                        corresponding_stab = [Position3DHex(x = el.x, y = el.y, z=0) for el in corresponding_stab]
+                        ancilla_int = mapping_ancillas_filtered[tuple(corresponding_stab)]
+                        stabilizer_product_x_ancillas.append(ancilla_int)
 
                 print("stabilizer_product_x init", stabilizer_products_x)
                 print("stabilizer_product_x ancillas", stabilizer_product_x_ancillas)
@@ -418,13 +532,30 @@ class SyndromeExtractionStimCC:
                 horizontal_cs_x_list.append(horizontal_cs_x)
 
                 #-------x stabilizer detectors---------
-                for anc_idx in range(n_ancillas):
-                    rec_current = -(n_ancillas - anc_idx)
+                #for anc_idx in range(n_ancillas):
+                any_z_prep = any(zpm.p == BasisPrism.Z for zpm in prism_pipes_zpm_temp.values())
+                for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
+                    zpm_local = self.get_zpm_for_stab(stab, prism_pipes_data_temp, prism_pipes_zpm_temp, stabs_x, stabs_z)
+                    rec_current = -(n_ancillas - anc_idx) - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
                     if r == 0:
                         # first round: only deterministic if initialized in X basis
-                        if zpm.p == BasisPrism.X:
+                        # if it's not the globally first round, then pay attention that bulk stabilizers still properly done
+                        # i.e. if the current r==0 layer is actually not a new initialization of qubits.
+                        # filter the ancillas belonging to a new initialized data qubits 
+                        #!TODO
+                        #if zpm.p == BasisPrism.X:
+                        #    circuit.append("DETECTOR", [stim.target_rec(rec_current)])
+                        #    print("X detector time start:", rec_current)
+                        if zpm_local.p == BasisPrism.X and not any_z_prep:
                             circuit.append("DETECTOR", [stim.target_rec(rec_current)])
-                            print("X detector time start:", rec_current)
+                            print("X, r=0, single detector", rec_current, "->", circuit.num_measurements+rec_current)
+                        elif zpm_local.p == BasisPrism.N:
+                            rec_prev = rec_current - meas_per_round_previous
+                            circuit.append("DETECTOR", [
+                                stim.target_rec(rec_current),
+                                stim.target_rec(rec_prev)
+                            ])
+                            print("X, r=0, double detector", rec_current, rec_prev, "->", circuit.num_measurements+rec_current, circuit.num_measurements+rec_prev)
                     else:
                         # middle rounds: always valid regardless of zpm.p
                         rec_prev = rec_current - meas_per_round
@@ -432,7 +563,7 @@ class SyndromeExtractionStimCC:
                             stim.target_rec(rec_current),
                             stim.target_rec(rec_prev)
                         ])
-                        print("X detector bulk:", rec_current, rec_prev)
+                        print("X detector bulk:", rec_current, rec_prev,"->", circuit.num_measurements + rec_current, circuit.num_measurements+rec_prev)
 
                 #--------Z syndrome extraction----------
                 #initialize ancillas in Z
@@ -444,19 +575,19 @@ class SyndromeExtractionStimCC:
                 horizontal_cs_z = []
                 stabilizer_products_z = None
                 stabilizer_product_z_ancillas = None
-                if self.d>5:
-                    stabilizer_products_z = result.stabilizer_products_z
-                    if len(stabilizer_products_z)!=0:
-                        stabilizer_products_z = stabilizer_products_z[0]#!HARD CODED TO FIRST PATH
-                        stabilizer_products_z = [[Position3DHex(el.x, el.y, 0) for el in stabilizer] for stabilizer in stabilizer_products_z]
-                        stabilizer_products_z = [self.canonical(stab) for stab in stabilizer_products_z]
+                #if self.d>5:
+                stabilizer_products_z = result.stabilizer_products_z
+                if len(stabilizer_products_z)!=0:
+                    stabilizer_products_z = stabilizer_products_z[0]#!HARD CODED TO FIRST PATH
+                    stabilizer_products_z = [[Position3DHex(el.x, el.y, 0) for el in stabilizer] for stabilizer in stabilizer_products_z]
+                    stabilizer_products_z = [self.canonical(stab) for stab in stabilizer_products_z]
 
-                        stabilizer_product_z_ancillas = [] #collect the ancilla labels for those stabilizers
-                        for stab in stabilizer_products_z:
-                            corresponding_stab = self.canonical(stab)
-                            corresponding_stab = [Position3DHex(x = el.x, y = el.y, z=0) for el in corresponding_stab]
-                            ancilla_int = mapping_ancillas_filtered[tuple(corresponding_stab)]
-                            stabilizer_product_z_ancillas.append(ancilla_int)
+                    stabilizer_product_z_ancillas = [] #collect the ancilla labels for those stabilizers
+                    for stab in stabilizer_products_z:
+                        corresponding_stab = self.canonical(stab)
+                        corresponding_stab = [Position3DHex(x = el.x, y = el.y, z=0) for el in corresponding_stab]
+                        ancilla_int = mapping_ancillas_filtered[tuple(corresponding_stab)]
+                        stabilizer_product_z_ancillas.append(ancilla_int)
 
 
                 print("stabilizer_product_z init", stabilizer_products_z)
@@ -493,19 +624,35 @@ class SyndromeExtractionStimCC:
                 if stabilizer_product_z_ancillas is not None:
                     for ancilla_int in stabilizer_product_z_ancillas:
                         pos_in_list = list(mapped_ancilla_qubits).index(ancilla_int)
+                        print("pos_in_list", pos_in_list)
+                        print("m_z_start", m_z_start)
                         abs_idx = m_z_start + pos_in_list
+                        print("abs_idx", abs_idx)
                         horizontal_cs_z.append(abs_idx)
                 print("horizontal_cs_z", horizontal_cs_z)
                 horizontal_cs_z_list.append(horizontal_cs_z)
 
                 #-------z stabilizer detectors---------
-                for anc_idx in range(n_ancillas):
-                    rec_current = -(n_ancillas - anc_idx)
+                #for anc_idx in range(n_ancillas):
+                any_x_prep = any(zpm.p == BasisPrism.X for zpm in prism_pipes_zpm_temp.values())
+                for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
+                    rec_current = -(n_ancillas - anc_idx) - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
+                    zpm_local = self.get_zpm_for_stab(stab, prism_pipes_data_temp, prism_pipes_zpm_temp, stabs_x, stabs_z)
                     if r == 0:
                         # first round: only deterministic if initialized in Z basis
-                        if zpm.p == BasisPrism.Z:
+                        if zpm_local.p == BasisPrism.Z:
                             circuit.append("DETECTOR", [stim.target_rec(rec_current)])
-                            print("Z detector time start:", rec_current)
+                            print("Z, r=0, single detector", rec_current, "->", circuit.num_measurements + rec_current)
+                        elif zpm_local.p == BasisPrism.N and not any_x_prep:
+                            rec_prev = rec_current - meas_per_round_previous -n_ancillas #last n_ancillas about the previous ancilla meas
+                            circuit.append("DETECTOR", [
+                                stim.target_rec(rec_current),
+                                stim.target_rec(rec_prev)
+                            ])
+                            print("Z, r=0, double detector", rec_current, rec_prev, "->", circuit.num_measurements+ rec_current, circuit.num_measurements+rec_prev)
+                        #if zpm.p == BasisPrism.Z:
+                        #    circuit.append("DETECTOR", [stim.target_rec(rec_current)])
+                        #    print("Z detector time start:", rec_current)
                     else:
                         # middle rounds: always valid regardless of zpm.p
                         rec_prev = rec_current - meas_per_round
@@ -513,7 +660,7 @@ class SyndromeExtractionStimCC:
                             stim.target_rec(rec_current),
                             stim.target_rec(rec_prev)
                         ])
-                        print("Z detector bulk:", rec_current, rec_prev)
+                        print("Z detector bulk:", rec_current, rec_prev ,"->", circuit.num_measurements + rec_current, circuit.num_measurements+rec_prev)
 
             offset_start = circuit.num_measurements
 
@@ -526,10 +673,12 @@ class SyndromeExtractionStimCC:
                     print(f"Measure Z, {prism_pipe}")
                     circuit.append("X_ERROR", mapped_data_qubits, p_meas)
                     circuit.append("M", mapped_data_qubits)
+                    meas_data_qubits += 1
                 elif zpm.m == BasisPrism.X:
                     print(f"Measure X, {prism_pipe}")
                     circuit.append("Z_ERROR", mapped_data_qubits, p_meas)
                     circuit.append("MX", mapped_data_qubits)
+                    meas_data_qubits += 1
 
                 total = circuit.num_measurements
                 #add OBS_INCLUDE only at the end of the diagram, i.e. at the largest available z
@@ -555,10 +704,13 @@ class SyndromeExtractionStimCC:
                         print("current star", current_star)
                         print("current_hor_lst", current_hor_lst)
 
+                    print("mapped data qubits", mapped_data_qubits)
+                    #translate current star into labels
+                    current_star_labels = [self.mapping[pos] for pos in current_star]
                     obs_targets = []
                     for i, qubit in enumerate(mapped_data_qubits):
-                        if current_star is not None:
-                            if qubit in current_star:
+                        if current_star_labels is not None:
+                            if qubit in current_star_labels:
                                 offset = -(total - offset_start - i)
                                 obs_targets.append(stim.target_rec(offset))
                                 print("added star qubit to OBS", offset)
@@ -568,11 +720,12 @@ class SyndromeExtractionStimCC:
 
                     #add parity of corresponding horizontal cs:
                     if current_hor_lst is not None:
-                        for horizontal_cs in current_hor_lst:
-                            for el in horizontal_cs:
-                                offset = -(total - el)
-                                obs_targets.append(stim.target_rec(offset))
-                                print("from horizontal CS added", offset)
+                        #for horizontal_cs in current_hor_lst:
+                        horizontal_cs = current_hor_lst[2]#!temp hard coded!!!!!
+                        for el in horizontal_cs:
+                            offset = -(total - el)
+                            obs_targets.append(stim.target_rec(offset))
+                            print("from horizontal CS added", offset)
                     print("observable final", obs_targets)
                     circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
 
@@ -606,6 +759,8 @@ class SyndromeExtractionStimCC:
                             circuit.append("DETECTOR", [stim.target_rec(rec_last_anc)] + data_targets)
                             print("final X detector:", rec_last_anc, data_targets)
 
+        self.assign_qubit_coords()
+        circuit = self.add_qubit_coords_to_circuit(circuit)
 
         return circuit
 

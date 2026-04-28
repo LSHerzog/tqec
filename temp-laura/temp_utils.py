@@ -60,6 +60,8 @@ def plot_position_dict(
     bdry: dict[str, list] | None = None,
     stabilizers: list[list] | None = None,
     star_op: list[list] | None = None,
+    mapping: dict | None = None,
+    mapping_ancillas: dict[tuple, int] | None = None
 ) -> plt.Figure:
     """Plot Position3DHex positions using their to_euclidean coords.
 
@@ -76,6 +78,27 @@ def plot_position_dict(
 
     def rainbow(i: int) -> tuple:
         return cm.rainbow(i / max(n_total - 1, 1))
+
+    ancilla_lookup = None
+    if mapping_ancillas is not None:
+        ancilla_lookup = {
+            frozenset(k): v for k, v in mapping_ancillas.items()
+        }
+
+    def draw_mapping_label(ax, p, x, y):
+        label = f"({p.x},{p.y})"
+        if mapping is not None and p in mapping:
+            label += f"\n{mapping[p]}"   # <-- add value on new line
+
+        ax.text(
+            x, y,
+            label,
+            fontsize=7,
+            ha="center",
+            va="center",
+            zorder=5,
+            #bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=1)
+        )
 
     color_idx = 0
     if stabilizers is not None:
@@ -94,7 +117,32 @@ def plot_position_dict(
             ax.add_patch(poly)
             ax.scatter(xs, ys, color=color, s=60, zorder=3)
             for p, x, y in zip(positions, xs, ys):
-                ax.text(x, y, f"({p.x},{p.y})", fontsize=7)
+                if mapping is None:
+                    ax.text(x, y, f"({p.x},{p.y})", fontsize=7)
+                else:
+                    draw_mapping_label(ax, p, x, y)
+
+            if ancilla_lookup is not None:
+                positions_z = tuple(Position3DHex(pos.x, pos.y, 0) for pos in positions)
+                key = frozenset(positions_z)
+                if key in ancilla_lookup:
+                    val = ancilla_lookup[key]
+
+                    # compute centroid of plaquette
+                    cx = sum(xs) / len(xs)
+                    cy = sum(ys) / len(ys)
+
+                    ax.text(
+                        cx, cy,
+                        f"{val}",
+                        fontsize=12,
+                        fontweight="bold",
+                        ha="center",
+                        va="center",
+                        color="black",
+                        zorder=6,
+                        #bbox=dict(facecolor="white", alpha=0.8, edgecolor="black", pad=1)
+                    )
 
     if bdry is not None:
         for label, positions in bdry.items():
