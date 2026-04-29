@@ -534,9 +534,10 @@ class SyndromeExtractionStimCC:
                 #-------x stabilizer detectors---------
                 #for anc_idx in range(n_ancillas):
                 any_z_prep = any(zpm.p == BasisPrism.Z for zpm in prism_pipes_zpm_temp.values())
+                print("x stabilizers bulk (meas_data_qubits)", meas_data_qubits)
                 for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
                     zpm_local = self.get_zpm_for_stab(stab, prism_pipes_data_temp, prism_pipes_zpm_temp, stabs_x, stabs_z)
-                    rec_current = -(n_ancillas - anc_idx) - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
+                    rec_current = -(n_ancillas - anc_idx)# - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
                     if r == 0:
                         # first round: only deterministic if initialized in X basis
                         # if it's not the globally first round, then pay attention that bulk stabilizers still properly done
@@ -546,16 +547,26 @@ class SyndromeExtractionStimCC:
                         #if zpm.p == BasisPrism.X:
                         #    circuit.append("DETECTOR", [stim.target_rec(rec_current)])
                         #    print("X detector time start:", rec_current)
-                        if zpm_local.p == BasisPrism.X and not any_z_prep:
+                        if zpm_local.p == BasisPrism.X: # and not any_z_prep:
                             circuit.append("DETECTOR", [stim.target_rec(rec_current)])
                             print("X, r=0, single detector", rec_current, "->", circuit.num_measurements+rec_current)
-                        elif zpm_local.p == BasisPrism.N:
-                            rec_prev = rec_current - meas_per_round_previous
-                            circuit.append("DETECTOR", [
-                                stim.target_rec(rec_current),
-                                stim.target_rec(rec_prev)
-                            ])
-                            print("X, r=0, double detector", rec_current, rec_prev, "->", circuit.num_measurements+rec_current, circuit.num_measurements+rec_prev)
+                        elif zpm_local.p == BasisPrism.N and not any_z_prep:
+                            #rec_prev = rec_current - meas_per_round_previous - meas_data_qubits
+                            prev_keys = list(mapping_ancillas_filtered_previous.keys())
+                            if stab in prev_keys:
+                                prev_anc_idx = prev_keys.index(stab)
+                                anc_idx_correction = anc_idx - prev_anc_idx  # how far off anc_idx is in the previous block
+                                print("X anc_idx_correction", anc_idx_correction)
+                                rec_prev = rec_current - meas_per_round_previous - meas_data_qubits - anc_idx_correction
+                                #offset_previous = - (len(prev_keys) - prev_anc_idx)
+                                #rec_prev = rec_current - n_ancillas + offset_previous
+                                circuit.append("DETECTOR", [
+                                    stim.target_rec(rec_current),
+                                    stim.target_rec(rec_prev)
+                                ])
+                                print("X, r=0, double detector", rec_current, rec_prev, "->", circuit.num_measurements+rec_current, circuit.num_measurements+rec_prev)
+                            #else: #!TEMPORARY
+                            #    circuit.append("DETECTOR", [stim.target_rec(rec_current)]) #!ONLY TO REMEDY THAT elif cannot find all stabilizers as stabilizers change between different z
                     else:
                         # middle rounds: always valid regardless of zpm.p
                         rec_prev = rec_current - meas_per_round
@@ -635,8 +646,9 @@ class SyndromeExtractionStimCC:
                 #-------z stabilizer detectors---------
                 #for anc_idx in range(n_ancillas):
                 any_x_prep = any(zpm.p == BasisPrism.X for zpm in prism_pipes_zpm_temp.values())
+                print("z stabilizers bulk (meas_data_qubits)", meas_data_qubits)
                 for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
-                    rec_current = -(n_ancillas - anc_idx) - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
+                    rec_current = -(n_ancillas - anc_idx)# - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
                     zpm_local = self.get_zpm_for_stab(stab, prism_pipes_data_temp, prism_pipes_zpm_temp, stabs_x, stabs_z)
                     if r == 0:
                         # first round: only deterministic if initialized in Z basis
@@ -644,12 +656,29 @@ class SyndromeExtractionStimCC:
                             circuit.append("DETECTOR", [stim.target_rec(rec_current)])
                             print("Z, r=0, single detector", rec_current, "->", circuit.num_measurements + rec_current)
                         elif zpm_local.p == BasisPrism.N and not any_x_prep:
-                            rec_prev = rec_current - meas_per_round_previous -n_ancillas #last n_ancillas about the previous ancilla meas
-                            circuit.append("DETECTOR", [
-                                stim.target_rec(rec_current),
-                                stim.target_rec(rec_prev)
-                            ])
-                            print("Z, r=0, double detector", rec_current, rec_prev, "->", circuit.num_measurements+ rec_current, circuit.num_measurements+rec_prev)
+                            #rec_prev = rec_current - meas_per_round_previous -n_ancillas - meas_data_qubits #last n_ancillas about the previous ancilla meas
+                            prev_keys = list(mapping_ancillas_filtered_previous.keys())
+                            if stab in prev_keys:
+                                prev_anc_idx = prev_keys.index(stab)
+                                anc_idx_correction = anc_idx - prev_anc_idx  # how far off anc_idx is in the previous block
+                                print("Z anc_idx_correction", anc_idx_correction)
+                                print("rec current", rec_current)
+                                print("meas per round previous", meas_per_round_previous)
+                                print("n_ancillas", n_ancillas)
+                                print("meas_data_qubits", meas_data_qubits)
+                                print("num meas", circuit.num_measurements)
+                                #rec_prev = rec_current - meas_per_round_previous - n_ancillas - meas_data_qubits - anc_idx_correction
+                                offset_previous = - (len(prev_keys) - prev_anc_idx)
+                                print("offset previous", offset_previous)
+                                #rec_prev = rec_current - n_ancillas - meas_data_qubits + offset_previous
+                                rec_prev = - 2*n_ancillas - meas_data_qubits + offset_previous
+                                circuit.append("DETECTOR", [
+                                    stim.target_rec(rec_current),
+                                    stim.target_rec(rec_prev)
+                                ])
+                                print("Z, r=0, double detector", rec_current, rec_prev, "->", circuit.num_measurements+rec_current, circuit.num_measurements+rec_prev)
+                            #else: #!TEMPORARY
+                            #    circuit.append("DETECTOR", [stim.target_rec(rec_current)]) #!ONLY TO REMEDY THAT elif cannot find all stabilizers as stabilizers change between different z
                         #if zpm.p == BasisPrism.Z:
                         #    circuit.append("DETECTOR", [stim.target_rec(rec_current)])
                         #    print("Z detector time start:", rec_current)
@@ -673,12 +702,12 @@ class SyndromeExtractionStimCC:
                     print(f"Measure Z, {prism_pipe}")
                     circuit.append("X_ERROR", mapped_data_qubits, p_meas)
                     circuit.append("M", mapped_data_qubits)
-                    meas_data_qubits += 1
+                    meas_data_qubits += len(mapped_data_qubits)
                 elif zpm.m == BasisPrism.X:
                     print(f"Measure X, {prism_pipe}")
                     circuit.append("Z_ERROR", mapped_data_qubits, p_meas)
                     circuit.append("MX", mapped_data_qubits)
-                    meas_data_qubits += 1
+                    meas_data_qubits += len(mapped_data_qubits)
 
                 total = circuit.num_measurements
                 #add OBS_INCLUDE only at the end of the diagram, i.e. at the largest available z
@@ -758,6 +787,8 @@ class SyndromeExtractionStimCC:
                                     data_targets.append(stim.target_rec(-(total - offset_start - pos_in_obs)))
                             circuit.append("DETECTOR", [stim.target_rec(rec_last_anc)] + data_targets)
                             print("final X detector:", rec_last_anc, data_targets)
+
+            mapping_ancillas_filtered_previous = mapping_ancillas_filtered.copy()
 
         self.assign_qubit_coords()
         circuit = self.add_qubit_coords_to_circuit(circuit)
