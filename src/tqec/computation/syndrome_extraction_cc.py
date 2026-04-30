@@ -397,6 +397,8 @@ class SyndromeExtractionStimCC:
 
         horizontal_cs_x_list = []
         horizontal_cs_z_list = []
+        vertical_cs_x_list = []
+        vertical_cs_z_list = []
 
         for s, z in enumerate(self.z_values):
             print(f"building circuit for z={z}...")
@@ -529,7 +531,8 @@ class SyndromeExtractionStimCC:
                         abs_idx = m_x_start + pos_in_list
                         horizontal_cs_x.append(abs_idx)
                 print("horizontal_cs_x", horizontal_cs_x)
-                horizontal_cs_x_list.append(horizontal_cs_x)
+                if r==0:
+                    horizontal_cs_x_list.append(horizontal_cs_x)
 
                 #-------x stabilizer detectors---------
                 #for anc_idx in range(n_ancillas):
@@ -557,9 +560,11 @@ class SyndromeExtractionStimCC:
                                 prev_anc_idx = prev_keys.index(stab)
                                 anc_idx_correction = anc_idx - prev_anc_idx  # how far off anc_idx is in the previous block
                                 print("X anc_idx_correction", anc_idx_correction)
-                                rec_prev = rec_current - meas_per_round_previous - meas_data_qubits - anc_idx_correction
-                                #offset_previous = - (len(prev_keys) - prev_anc_idx)
+                                #rec_prev = rec_current - meas_per_round_previous - meas_data_qubits - anc_idx_correction
+                                n_ancillas_prev = len(prev_keys)
+                                offset_previous = - (n_ancillas_prev - prev_anc_idx)
                                 #rec_prev = rec_current - n_ancillas + offset_previous
+                                rec_prev = - n_ancillas - n_ancillas_prev - meas_data_qubits + offset_previous
                                 circuit.append("DETECTOR", [
                                     stim.target_rec(rec_current),
                                     stim.target_rec(rec_prev)
@@ -641,7 +646,8 @@ class SyndromeExtractionStimCC:
                         print("abs_idx", abs_idx)
                         horizontal_cs_z.append(abs_idx)
                 print("horizontal_cs_z", horizontal_cs_z)
-                horizontal_cs_z_list.append(horizontal_cs_z)
+                if r == 0:
+                    horizontal_cs_z_list.append(horizontal_cs_z)
 
                 #-------z stabilizer detectors---------
                 #for anc_idx in range(n_ancillas):
@@ -699,15 +705,51 @@ class SyndromeExtractionStimCC:
                 data_qubits = prism_pipes_data_temp[prism_pipe]
                 mapped_data_qubits = [self.mapping[Position3DHex(x=el.x, y=el.y, z=0)] for el in data_qubits]
                 if zpm.m == BasisPrism.Z:
+                    total_current = circuit.num_measurements
                     print(f"Measure Z, {prism_pipe}")
                     circuit.append("X_ERROR", mapped_data_qubits, p_meas)
                     circuit.append("M", mapped_data_qubits)
                     meas_data_qubits += len(mapped_data_qubits)
+                    #vertical Z correlation surface meas labels if there are any
+                    if star_ops_z is not None:
+                        measured_set = set(mapped_data_qubits)
+                        star_ops_z_labels = []
+                        for star_op in star_ops_z:
+                            star_op_tr = [Position3DHex(x = pos.x, y = pos.y, z = 0) for pos in star_op]
+                            lst = [self.mapping[pos] for pos in star_op_tr]
+                            star_ops_z_labels.append(lst)
+                        vertical_cs_z = [
+                            total_current + mapped_data_qubits.index(qubit)
+                            for star_op in star_ops_z_labels
+                            for qubit in star_op
+                            if qubit in measured_set
+                        ]
+                        vertical_cs_z_list.append(vertical_cs_z)
+
                 elif zpm.m == BasisPrism.X:
                     print(f"Measure X, {prism_pipe}")
+                    total_current = circuit.num_measurements
                     circuit.append("Z_ERROR", mapped_data_qubits, p_meas)
                     circuit.append("MX", mapped_data_qubits)
                     meas_data_qubits += len(mapped_data_qubits)
+                    #vertical X correlation surface meas labels if there are any
+                    if star_ops_x is not None:
+                        measured_set = set(mapped_data_qubits)
+                        star_ops_x_labels = []
+                        for star_op in star_ops_x:
+                            star_op_tr = [Position3DHex(x = pos.x, y = pos.y, z = 0) for pos in star_op]
+                            lst = [self.mapping[pos] for pos in star_op_tr]
+                            star_ops_x_labels.append(lst)
+                        vertical_cs_x = [
+                            total_current + mapped_data_qubits.index(qubit)
+                            for star_op in star_ops_x_labels
+                            for qubit in star_op
+                            if qubit in measured_set
+                        ]
+                        vertical_cs_x_list.append(vertical_cs_x)
+                        print("mapped data meas-------",mapped_data_qubits)
+                        print("star ops x ----------",star_ops_x)
+                        print("vertical_cs_x", vertical_cs_x)
 
                 total = circuit.num_measurements
                 #add OBS_INCLUDE only at the end of the diagram, i.e. at the largest available z
@@ -722,11 +764,12 @@ class SyndromeExtractionStimCC:
                         if star_ops_z is not None:
                             current_star = star_ops_z[0] #!HARD CODED FOR NOW, IF MORE OPEN PIPES ADAPT THIS
                             current_hor_lst = horizontal_cs_z_list
-                        #!NO VERTICAL CS INCLUDED YET
+                            current_ver_lst = vertical_cs_z_list
                     elif zpm.m == BasisPrism.X:
                         if star_ops_x is not None:
                             current_star = star_ops_x[0]
                             current_hor_lst = horizontal_cs_x_list
+                            current_ver_lst = vertical_cs_x_list
                     if current_star is not None:
                         current_star = [Position3DHex(el.x,el.y,0) for el in current_star]
 
@@ -750,11 +793,21 @@ class SyndromeExtractionStimCC:
                     #add parity of corresponding horizontal cs:
                     if current_hor_lst is not None:
                         #for horizontal_cs in current_hor_lst:
-                        horizontal_cs = current_hor_lst[2]#!temp hard coded!!!!!
+                        horizontal_cs = current_hor_lst[1]#!temp hard coded!!!!!
                         for el in horizontal_cs:
                             offset = -(total - el)
                             obs_targets.append(stim.target_rec(offset))
                             print("from horizontal CS added", offset)
+
+                    #add parity from corresponding vertical cs:
+                    if current_ver_lst is not None:
+                        print("current_ver_lst", current_ver_lst)
+                        for lst in current_ver_lst[:-1]: #the last vertical star should not be included
+                            for el in lst:
+                                offset = -(total - el)
+                                obs_targets.append(stim.target_rec(offset))
+                                print("from vertical CS added", offset)
+
                     print("observable final", obs_targets)
                     circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
 
@@ -778,7 +831,7 @@ class SyndromeExtractionStimCC:
 
                     elif zpm.m == BasisPrism.X:
                         for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
-                            rec_last_anc = -(total - offset_start + n_ancillas - anc_idx)
+                            rec_last_anc = -(total - offset_start + 2*n_ancillas - anc_idx)
                             stab_data_qubits = [self.mapping[q] for q in stab]
                             data_targets = []
                             for q in stab_data_qubits:
@@ -832,28 +885,23 @@ decoder_dict = tesseract_decoder.make_tesseract_sinter_decoders_dict()
 
 def run_experiment_sinter(
         circuit_builders: list,
-        rounds: int,
+        rounds: list[int],
         p_values: list[float],
         num_workers: int = 2,
         max_shots: int = 10_000,
         max_errors: int = 100,
+        path: str = "default.csv"
 ) -> list[sinter.TaskStats]:
-    """
-    Run a logical error rate experiment for a range of noise levels p using sinter + tesseract.
-    All noise parameters are set to p.
-    Loops over circuit_builders, logical_operators, and p_values.
-    circuit_builders and logical_operators are assumed to be paired (same index = same code).
-    """
     tasks = [
         sinter.Task(
             circuit=circuit_builder.run_all(
-                rounds=rounds,
+                rounds=rounds[idx],
                 p_init=p,
                 p_gate2=p,
                 p_meas=p,
                 p_idle=p,
             ),
-            json_metadata={'p': p, 'rounds': rounds, 'code_idx': idx, 'd': circuit_builder.d},
+            json_metadata={'p': p, 'rounds': rounds[idx], 'code_idx': idx, 'd': circuit_builder.d},
         )
         for idx, circuit_builder in enumerate(circuit_builders)
         for p in p_values
@@ -867,22 +915,19 @@ def run_experiment_sinter(
         max_shots=max_shots,
         max_errors=max_errors,
         print_progress=True,
+        save_resume_filepath=path
     )
-
     return stats
 
 
 def plot_experiment_sinter(stats: list[sinter.TaskStats], d_lst: list[int]):
-    """Plot sinter tasks."""
     fig, ax = plt.subplots()
-
     sinter.plot_error_rate(
         ax=ax,
         stats=stats,
         x_func=lambda stat: stat.json_metadata['p'],
-        group_func=lambda stat: f"d={d_lst[stat.json_metadata['code_idx']]}",
+        group_func=lambda stat: f"d={d_lst[stat.json_metadata['code_idx']]}, r={stat.json_metadata['rounds']}",
     )
-
     ax.set_xlabel("Physical error rate p")
     ax.set_ylabel("Logical error rate")
     ax.set_title("Logical error rate vs physical error rate")
@@ -891,3 +936,4 @@ def plot_experiment_sinter(stats: list[sinter.TaskStats], d_lst: list[int]):
     ax.legend(title="Code distance")
     plt.tight_layout()
     plt.show()
+    return fig
