@@ -380,6 +380,46 @@ class SyndromeExtractionStimCC:
 
         return None
 
+    def stabilizer_changed_shape(
+        self,
+        stab: tuple,
+        ancilla_label: int,
+        mapping_ancillas_filtered_previous: dict,
+    ) -> bool:
+        """Check if a stabilizer changed shape compared to the previous z-layer.
+
+        A stabilizer 'changes shape' when its ancilla label is shared with
+        another stabilizer (i.e. a weight-4 stab is a subset of a weight-6 stab
+        and they share an ancilla), AND the stab that was active under that
+        ancilla label in the previous layer has a different support than the
+        current one.
+
+        Args:
+            stab: the canonical stabilizer tuple (z=0 projected) of the current layer.
+            ancilla_label: the integer ancilla label for this stabilizer.
+            mapping_ancillas_filtered_previous: the mapping_ancillas_filtered
+                dict from the previous z-layer.
+
+        Returns:
+            True if the stabilizer support changed shape, False otherwise.
+        """
+        # Find which stabilizer(s) in the previous layer shared this ancilla label
+        prev_stabs_with_same_ancilla = [
+            prev_stab
+            for prev_stab, prev_label in mapping_ancillas_filtered_previous.items()
+            if prev_label == ancilla_label
+        ]
+
+        if not prev_stabs_with_same_ancilla:
+            # Ancilla didn't exist in previous layer at all
+            return True
+
+        # There should be at most one (by construction), but be safe
+        prev_stab = prev_stabs_with_same_ancilla[0]
+
+        # Compare support: same set of qubits = same shape
+        return set(stab) != set(prev_stab)
+
     def create_stim_circuit_naive(
             self,
             rounds,
@@ -541,23 +581,37 @@ class SyndromeExtractionStimCC:
                 for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
                     zpm_local = self.get_zpm_for_stab(stab, prism_pipes_data_temp, prism_pipes_zpm_temp, stabs_x, stabs_z)
                     rec_current = -(n_ancillas - anc_idx)# - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
+                    # was the stabilizer shape changed from previous z layer to the current z layer? e.g. if a weight-4 stab becomes weight-6 in a split or vice versa
+                    if s != 0:
+                        stabilizer_change = self.stabilizer_changed_shape(stab, ancilla_int, mapping_ancillas_filtered_previous)
+                        prism_pipes_zpm_temp_previous = self.prism_pipes_to_ZPM[self.z_values[s - 1]]
+                        any_meas_prior = any(zpm.m != BasisPrism.N for zpm in prism_pipes_zpm_temp_previous.values())
+                    else:
+                        stabilizer_change = True #the elif below should not be triggered at z=0
+                        any_meas_prior = False
+                    print("stab x", stab)
+                    print("ancilla int x", ancilla_int)
+                    print("zpm local x", zpm_local)
+                    print("stabilizer_change", stabilizer_change)
                     if r == 0:
                         # first round: only deterministic if initialized in X basis
                         # if it's not the globally first round, then pay attention that bulk stabilizers still properly done
                         # i.e. if the current r==0 layer is actually not a new initialization of qubits.
                         # filter the ancillas belonging to a new initialized data qubits 
-                        #!TODO
-                        #if zpm.p == BasisPrism.X:
-                        #    circuit.append("DETECTOR", [stim.target_rec(rec_current)])
-                        #    print("X detector time start:", rec_current)
                         if zpm_local.p == BasisPrism.X: # and not any_z_prep:
                             circuit.append("DETECTOR", [stim.target_rec(rec_current)])
                             print("X, r=0, single detector", rec_current, "->", circuit.num_measurements+rec_current)
-                        elif zpm_local.p == BasisPrism.N and not any_z_prep:
+                        elif (zpm_local.p == BasisPrism.N and not any_z_prep and not any_meas_prior) or (
+                            any_z_prep and zpm_local.p == BasisPrism.N and not stabilizer_change and not any_meas_prior
+                            ) or (
+                            not any_z_prep and zpm_local.p == BasisPrism.N and not stabilizer_change and any_meas_prior
+                            ):
                             #rec_prev = rec_current - meas_per_round_previous - meas_data_qubits
                             prev_keys = list(mapping_ancillas_filtered_previous.keys())
-                            if stab in prev_keys:
-                                prev_anc_idx = prev_keys.index(stab)
+                            prev_values = list(mapping_ancillas_filtered_previous.values())
+                            if ancilla_int in prev_values:
+                                #prev_anc_idx = prev_keys.index(stab)
+                                prev_anc_idx = prev_values.index(ancilla_int)
                                 anc_idx_correction = anc_idx - prev_anc_idx  # how far off anc_idx is in the previous block
                                 print("X anc_idx_correction", anc_idx_correction)
                                 #rec_prev = rec_current - meas_per_round_previous - meas_data_qubits - anc_idx_correction
@@ -656,12 +710,26 @@ class SyndromeExtractionStimCC:
                 for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
                     rec_current = -(n_ancillas - anc_idx)# - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
                     zpm_local = self.get_zpm_for_stab(stab, prism_pipes_data_temp, prism_pipes_zpm_temp, stabs_x, stabs_z)
+                    print("stab", stab)
+                    print("ancilla int", ancilla_int)
+                    # was the stabilizer shape changed from previous z layer to the current z layer? e.g. if a weight-4 stab becomes weight-6 in a split or vice versa
+                    if s != 0:
+                        stabilizer_change = self.stabilizer_changed_shape(stab, ancilla_int, mapping_ancillas_filtered_previous)
+                        prism_pipes_zpm_temp_previous = self.prism_pipes_to_ZPM[self.z_values[s - 1]]
+                        any_meas_prior = any(zpm.m != BasisPrism.N for zpm in prism_pipes_zpm_temp_previous.values())
+                    else:
+                        stabilizer_change = True #the elif below should not be triggered at z=0
+                        any_meas_prior = False
                     if r == 0:
                         # first round: only deterministic if initialized in Z basis
                         if zpm_local.p == BasisPrism.Z:
                             circuit.append("DETECTOR", [stim.target_rec(rec_current)])
                             print("Z, r=0, single detector", rec_current, "->", circuit.num_measurements + rec_current)
-                        elif zpm_local.p == BasisPrism.N and not any_x_prep:
+                        elif (zpm_local.p == BasisPrism.N and not any_x_prep and not any_meas_prior) or (
+                            any_x_prep and zpm_local.p == BasisPrism.N and not stabilizer_change and not any_meas_prior
+                            ) or (
+                            not any_x_prep and zpm_local.p == BasisPrism.N and not stabilizer_change and any_meas_prior  
+                            ):
                             #rec_prev = rec_current - meas_per_round_previous -n_ancillas - meas_data_qubits #last n_ancillas about the previous ancilla meas
                             prev_keys = list(mapping_ancillas_filtered_previous.keys())
                             if stab in prev_keys:
