@@ -731,7 +731,7 @@ class SyndromeExtractionStimCC:
                             not any_x_prep and zpm_local.p == BasisPrism.N and not stabilizer_change and any_meas_prior  
                             ):
                             #rec_prev = rec_current - meas_per_round_previous -n_ancillas - meas_data_qubits #last n_ancillas about the previous ancilla meas
-                            prev_keys = list(mapping_ancillas_filtered_previous.keys())
+                            prev_keys = list(mapping_ancillas_filtered_previous.keys())  # noqa: F821
                             if stab in prev_keys:
                                 prev_anc_idx = prev_keys.index(stab)
                                 anc_idx_correction = anc_idx - prev_anc_idx  # how far off anc_idx is in the previous block
@@ -768,6 +768,8 @@ class SyndromeExtractionStimCC:
             offset_start = circuit.num_measurements
 
             #check whether some zpm.m is Z or X and then measure accordingly.
+            total_mapped_data_qubits_z = []
+            total_mapped_data_qubits_x = []
             for prism_pipe in prism_pipes_zpm_temp.keys():
                 zpm = prism_pipes_zpm_temp[prism_pipe]
                 data_qubits = prism_pipes_data_temp[prism_pipe]
@@ -778,6 +780,7 @@ class SyndromeExtractionStimCC:
                     circuit.append("X_ERROR", mapped_data_qubits, p_meas)
                     circuit.append("M", mapped_data_qubits)
                     meas_data_qubits += len(mapped_data_qubits)
+                    total_mapped_data_qubits_z += mapped_data_qubits
                     #vertical Z correlation surface meas labels if there are any
                     if star_ops_z is not None:
                         measured_set = set(mapped_data_qubits)
@@ -800,6 +803,7 @@ class SyndromeExtractionStimCC:
                     circuit.append("Z_ERROR", mapped_data_qubits, p_meas)
                     circuit.append("MX", mapped_data_qubits)
                     meas_data_qubits += len(mapped_data_qubits)
+                    total_mapped_data_qubits_x += mapped_data_qubits
                     #vertical X correlation surface meas labels if there are any
                     if star_ops_x is not None:
                         measured_set = set(mapped_data_qubits)
@@ -859,7 +863,7 @@ class SyndromeExtractionStimCC:
                             obs_targets.append(stim.target_rec(offset))
 
                     #add parity of corresponding horizontal cs:
-                    if current_hor_lst is not None:
+                    if len(current_hor_lst) != 0 and not all(len(lst) == 0 for lst in current_hor_lst):#!hard coded to allow mem
                         #for horizontal_cs in current_hor_lst:
                         horizontal_cs = current_hor_lst[1]#!temp hard coded!!!!!
                         for el in horizontal_cs:
@@ -868,7 +872,7 @@ class SyndromeExtractionStimCC:
                             print("from horizontal CS added", offset)
 
                     #add parity from corresponding vertical cs:
-                    if current_ver_lst is not None:
+                    if len(current_ver_lst)!=0:
                         print("current_ver_lst", current_ver_lst)
                         for lst in current_ver_lst[:-1]: #the last vertical star should not be included
                             for el in lst:
@@ -909,7 +913,42 @@ class SyndromeExtractionStimCC:
                             circuit.append("DETECTOR", [stim.target_rec(rec_last_anc)] + data_targets)
                             print("final X detector:", rec_last_anc, data_targets)
 
-            mapping_ancillas_filtered_previous = mapping_ancillas_filtered.copy()
+            #--------add data qubit measurement detectors not final measurement--------
+            #add detectors for stabilizers fully included in the measurement
+            if z != max(self.z_values):
+                for stab in stabs_x:
+                    stab_normalized = [Position3DHex(el.x, el.y, 0) for el in stab]
+                    stab_int = [self.mapping[pos] for pos in stab_normalized]
+                    if set(stab_int).issubset(set(total_mapped_data_qubits_x)):
+                        stab_tup = tuple(self.canonical(stab_normalized))
+                        ancilla_int = mapping_ancillas_filtered[stab_tup]
+                        pos_ancilla = list(mapped_ancilla_qubits).index(ancilla_int)
+                        lst_det = []
+                        for q in stab_int:
+                            pos_in_meas = total_mapped_data_qubits_x.index(q)
+                            lst_det.append(stim.target_rec(-(len(total_mapped_data_qubits_x) - pos_in_meas)))
+                        #add x ancilla previous
+                        rec = -(len(total_mapped_data_qubits_x) + 2*n_ancillas - pos_ancilla) #2 ancillas bc x ancilla meas earlier
+                        lst_det.append(stim.target_rec(rec))
+                        circuit.append("DETECTOR", lst_det)
+                for stab in stabs_z:
+                    stab_normalized = [Position3DHex(el.x, el.y, 0) for el in stab]
+                    stab_int = [self.mapping[pos] for pos in stab_normalized]
+                    if set(stab_int).issubset(set(total_mapped_data_qubits_z)):
+                        stab_tup = tuple(self.canonical(stab_normalized))
+                        ancilla_int = mapping_ancillas_filtered[stab_tup]
+                        pos_ancilla = list(mapped_ancilla_qubits).index(ancilla_int)
+                        lst_det = []
+                        for q in stab_int:
+                            pos_in_meas = total_mapped_data_qubits_z.index(q)
+                            lst_det.append(stim.target_rec(-(len(total_mapped_data_qubits_z) - pos_in_meas)))
+                        #add z ancilla previous
+                        #!why same rec as for stabs_x? n_ancillas = len(total_mapped_data_qubits) in current example. maybe exchange variables for more general versions?
+                        rec = -(len(total_mapped_data_qubits_x) + 2*n_ancillas - pos_ancilla) #1 ancillas bc z ancilla meas later
+                        lst_det.append(stim.target_rec(rec))
+                        circuit.append("DETECTOR", lst_det)
+
+            mapping_ancillas_filtered_previous = mapping_ancillas_filtered.copy()  # noqa: F841
 
         self.assign_qubit_coords()
         circuit = self.add_qubit_coords_to_circuit(circuit)

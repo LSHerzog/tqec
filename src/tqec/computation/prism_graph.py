@@ -354,6 +354,8 @@ class PrismGraph:
 
         #depending on the pipe ver/hor, decide whether the star operator is an x or z logical
         partitioned_star_ops = PrismGraph.split_into_connected_components(star_op_final)
+        #deduplicate
+        partitioned_star_ops = [list(dict.fromkeys(component)) for component in partitioned_star_ops]
         star_ops_x = []
         star_ops_z = []
         for component in partitioned_star_ops:
