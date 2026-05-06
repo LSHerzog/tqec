@@ -102,7 +102,11 @@ class SyndromeExtractionStimCC:
             except TQECError as e:
                 #for d=3 the 3 coloring cannot be created for a single patch as it does not contain weight 6 stabilizers
                 #but we do not care and skip this because for a single patch there's no stabilizer product anyway
-                if "No weight-6 stabilizer found to seed the 3-coloring." not in str(e):
+                allowed_messages = [
+                    "No weight-6 stabilizer found to seed the 3-coloring.",
+                    "Could not resolve coloring — stuck with ambiguous boundary stabilizers."
+                ]
+                if not any(msg in str(e) for msg in allowed_messages):
                     raise TQECError("There is some issue with the stabilizer product construction.")
                 else:
                     result = StabilizerProductResult(
@@ -122,15 +126,42 @@ class SyndromeExtractionStimCC:
 
     def create_mapping(self):
         """Create a mapping of each data_qubit position to an int."""
-        positions = set()
+        #positions = set()
+        #for z in self.z_values:
+        #    [stabs_x, stabs_z] = self.result_dct[z]["stabs"]
+        #    stabs = stabs_x + stabs_z #double stabs removed
+        #    positions_temp = {item for sublist in stabs for item in sublist}
+        #    #set all z values to 0, because we want the mapping agnostically of z
+        #    positions_temp = {Position3DHex(x = pos.x, y = pos.y, z = 0) for pos in positions_temp}
+        #    positions.update(positions_temp)
+        #self.mapping = {value: key for key,value in enumerate(positions)}
+        positions_ordered = []
+        seen = set()
+
+        # collect all prisms first, then all pipes — consistent with any z layer
+        # use z=0 projected positions
         for z in self.z_values:
-            [stabs_x, stabs_z] = self.result_dct[z]["stabs"]
-            stabs = stabs_x + stabs_z #double stabs removed
-            positions_temp = {item for sublist in stabs for item in sublist}
-            #set all z values to 0, because we want the mapping agnostically of z
-            positions_temp = {Position3DHex(x = pos.x, y = pos.y, z = 0) for pos in positions_temp}
-            positions.update(positions_temp)
-        self.mapping = {value: key for key,value in enumerate(positions)}
+            prism_pipes_data = self.prism_graph.prism_pipes_to_data_qubits_full[z]
+
+            # first pass: prisms only
+            for pipe_prism, data_qubits in prism_pipes_data.items():
+                if isinstance(pipe_prism, Prism):
+                    for pos in data_qubits:
+                        flat = Position3DHex(x=pos.x, y=pos.y, z=0)
+                        if flat not in seen:
+                            positions_ordered.append(flat)
+                            seen.add(flat)
+
+            # second pass: pipes only
+            for pipe_prism, data_qubits in prism_pipes_data.items():
+                if isinstance(pipe_prism, PrismPipe):
+                    for pos in data_qubits:
+                        flat = Position3DHex(x=pos.x, y=pos.y, z=0)
+                        if flat not in seen:
+                            positions_ordered.append(flat)
+                            seen.add(flat)
+
+        self.mapping = {pos: idx for idx, pos in enumerate(positions_ordered)}
 
     def check_matrix(self, z:int, stab_type: str):
         """Create check matrix given some stabilizers and a mapping."""
@@ -217,8 +248,6 @@ class SyndromeExtractionStimCC:
         #!FIRST SIMPLE VERSION WHERE ALL STABS HAVE OWN ANCILLA
         #! adapt integer assignment if less ancillas will be assumed later
         max_label = max(list(self.mapping.values()))
-
-
         union = set()
         for dct in self.dct_stabilizers_all.values():
             for stab in dct.keys():
@@ -228,40 +257,34 @@ class SyndromeExtractionStimCC:
                     for p in stab
                 )
                 union.add(stab_flat)
-
         #if weight-4 and weight-6 stabilizers have max overlap, assign same ancilla
         mapping_ancillas = {}
         stab_sets = {stab: set(stab) for stab in union}
         weight6 = [stab for stab in union if len(stab) == 6]
         weight4 = [stab for stab in union if len(stab) == 4]
-
         mapping_ancillas = {}
         current_label = max_label + 1
-
         for stab in weight6:
             mapping_ancillas[stab] = current_label
             current_label += 1
-
         for stab4 in weight4:
             set4 = stab_sets[stab4]
-
             assigned = False
             for stab6 in weight6:
                 if set4.issubset(stab_sets[stab6]):
                     mapping_ancillas[stab4] = mapping_ancillas[stab6]
                     assigned = True
                     break
-
             if not assigned:
                 mapping_ancillas[stab4] = current_label
                 current_label += 1
-
         others = [stab for stab in union if len(stab) not in (4, 6)]
         for stab in others:
             mapping_ancillas[stab] = current_label
             current_label += 1
-
         self.mapping_ancillas = mapping_ancillas
+
+
 
     #! per timeslice define the init/meas basis per qubit or if none of those actions is performed
     #! based on pipe color or prism color
@@ -420,13 +443,59 @@ class SyndromeExtractionStimCC:
         # Compare support: same set of qubits = same shape
         return set(stab) != set(prev_stab)
 
+    def find_extra_qubits(self, stab: tuple) -> tuple[list, set] | tuple[None, None]:
+        """Find the extra qubits in the weight-6 parent stabilizer.
+
+        Given a weight-4 stabilizer, finds the weight-6 stabilizer that contains
+        it as a subset, and returns the 2 extra qubit labels and positions.
+
+        Returns:
+            (extra_qubit_labels, extra_qubits) if a weight-6 parent is found,
+            (None, None) otherwise.
+        """
+        stab_set = set(stab)
+        weight6_parent = None
+        for candidate in self.mapping_ancillas:
+            if len(candidate) == 6 and stab_set.issubset(set(candidate)):
+                weight6_parent = candidate
+                break
+        if weight6_parent is None:
+            return None, None
+        extra_qubits = set(weight6_parent) - stab_set
+        extra_qubit_labels = [self.mapping[q] for q in extra_qubits]
+        return extra_qubit_labels, extra_qubits
+
+    def find_weight2_subset_same_layer(
+        self,
+        stab_w6: tuple,
+        mapping_ancillas_filtered: dict,
+    ):
+        """
+        Given a weight-6 stabilizer, find a weight-2 stabilizer that is a subset
+        of it and present in the SAME layer mapping.
+
+        Returns:
+            (weight2_stab, ancilla_label) or (None, None)
+        """
+        if len(stab_w6) != 6:
+            return None, None
+
+        stab6_set = set(stab_w6)
+
+        for stab, anc in mapping_ancillas_filtered.items():
+            if len(stab) == 2 and set(stab).issubset(stab6_set):
+                return stab, anc
+
+        return None, None
+
     def create_stim_circuit_naive(
             self,
             rounds,
             p_init: float,
             p_meas: float,
             p_idle: float,
-            p_gate2: float) -> stim.Circuit:
+            p_gate2: float,
+        ) -> stim.Circuit:
         """Create a stim circuit of the object."""
         #! currently no horizontal correlation surfaces possible yet!
         #! summarize input from correlationsurface directly!
@@ -574,9 +643,11 @@ class SyndromeExtractionStimCC:
                 if r==0:
                     horizontal_cs_x_list.append(horizontal_cs_x)
 
+                any_z_prep = any(zpm.p == BasisPrism.Z for zpm in prism_pipes_zpm_temp.values())
+                any_x_prep = any(zpm.p == BasisPrism.X for zpm in prism_pipes_zpm_temp.values())
+
                 #-------x stabilizer detectors---------
                 #for anc_idx in range(n_ancillas):
-                any_z_prep = any(zpm.p == BasisPrism.Z for zpm in prism_pipes_zpm_temp.values())
                 print("x stabilizers bulk (meas_data_qubits)", meas_data_qubits)
                 for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
                     zpm_local = self.get_zpm_for_stab(stab, prism_pipes_data_temp, prism_pipes_zpm_temp, stabs_x, stabs_z)
@@ -594,6 +665,9 @@ class SyndromeExtractionStimCC:
                     print("zpm local x", zpm_local)
                     print("stabilizer_change", stabilizer_change)
                     if r == 0:
+                        if s!=0:
+                            prev_keys = list(mapping_ancillas_filtered_previous.keys())
+                            prev_values = list(mapping_ancillas_filtered_previous.values())
                         # first round: only deterministic if initialized in X basis
                         # if it's not the globally first round, then pay attention that bulk stabilizers still properly done
                         # i.e. if the current r==0 layer is actually not a new initialization of qubits.
@@ -607,13 +681,9 @@ class SyndromeExtractionStimCC:
                             not any_z_prep and zpm_local.p == BasisPrism.N and not stabilizer_change and any_meas_prior
                             ):
                             #rec_prev = rec_current - meas_per_round_previous - meas_data_qubits
-                            prev_keys = list(mapping_ancillas_filtered_previous.keys())
-                            prev_values = list(mapping_ancillas_filtered_previous.values())
                             if ancilla_int in prev_values:
                                 #prev_anc_idx = prev_keys.index(stab)
                                 prev_anc_idx = prev_values.index(ancilla_int)
-                                anc_idx_correction = anc_idx - prev_anc_idx  # how far off anc_idx is in the previous block
-                                print("X anc_idx_correction", anc_idx_correction)
                                 #rec_prev = rec_current - meas_per_round_previous - meas_data_qubits - anc_idx_correction
                                 n_ancillas_prev = len(prev_keys)
                                 offset_previous = - (n_ancillas_prev - prev_anc_idx)
@@ -624,8 +694,75 @@ class SyndromeExtractionStimCC:
                                     stim.target_rec(rec_prev)
                                 ])
                                 print("X, r=0, double detector", rec_current, rec_prev, "->", circuit.num_measurements+rec_current, circuit.num_measurements+rec_prev)
-                            #else: #!TEMPORARY
-                            #    circuit.append("DETECTOR", [stim.target_rec(rec_current)]) #!ONLY TO REMEDY THAT elif cannot find all stabilizers as stabilizers change between different z
+                        elif (stabilizer_change and any_meas_prior and not any_z_prep_previous and zpm_local.p == BasisPrism.N):
+                            #if the stabilizer changed shape and there was a prior meas in X basis
+                            #then you need a detector that compares the current weight-4 stabilizer
+                            #with the measurement outcomes of the previous layer that complete it
+                            #to a weight-6 stabilizer
+                            prev_meas_x = total_mapped_data_qubits_x_previous  # noqa: F821
+                            extra_qubit_labels, extra_qubits = self.find_extra_qubits(stab)
+                            if extra_qubit_labels is None:
+                                continue
+                            missing_targets = []
+                            for q_label in extra_qubit_labels:
+                                if q_label in prev_meas_x:
+                                    pos_in_meas = prev_meas_x.index(q_label)
+                                    offset = -(len(prev_meas_x) - pos_in_meas + n_ancillas)
+                                    missing_targets.append(stim.target_rec(offset))
+                            if len(missing_targets) == 2:
+                                    circuit.append("DETECTOR", [stim.target_rec(rec_current)] + missing_targets)
+                        elif (stabilizer_change and any_z_prep):
+                            #within a merge, build detectors for weight-2 and weight-6 stabilizers where the weight-2 is a subset of weight-6
+                            #i.e. if stabilizer changed and we have a horizontal z cs (aka any_x_prep)
+                            #i.e. we add detectors within the same layer of syndrome measurements
+                            #and furthermore the previous weight-4 corresponding measurement
+                            weight2_stab, weight2_anc = self.find_weight2_subset_same_layer(
+                                stab,
+                                mapping_ancillas_filtered
+                            )
+                            if weight2_stab is None:
+                                continue
+                            weight2_idx = list(mapping_ancillas_filtered.values()).index(weight2_anc)
+                            rec_weight2 = -(n_ancillas - weight2_idx)
+                            #also previous layer's weight-4 stabilizer, i.e. same anc_idx
+                            if ancilla_int not in prev_values:
+                                continue
+                            prev_anc_idx = prev_values.index(ancilla_int)
+                            n_ancillas_prev = len(prev_values)
+                            rec_previous = - n_ancillas - n_ancillas_prev - meas_data_qubits - (n_ancillas_prev - prev_anc_idx)
+                            circuit.append("DETECTOR", [
+                                stim.target_rec(rec_current),
+                                stim.target_rec(rec_weight2),
+                                stim.target_rec(rec_previous)
+                            ])
+                        elif (stabilizer_change and any_z_prep_previous):
+                            #after a split we do the same as above only shifted:
+                            #also add detectors that compare the same weight-4 Z stabilizer with its previous weight-2 stabilizer
+                            #and the previous weight-6 stabilizer
+                            #this requires a horizontal x cs in the previous layer
+                            extra_qubit_labels, extra_qubits = self.find_extra_qubits(stab)
+                            if extra_qubit_labels is None:
+                                continue
+                            weight2_prev_stab = None
+                            for prev_stab in prev_keys:
+                                if set(prev_stab) == extra_qubits:
+                                    weight2_prev_stab = prev_stab
+                                    break
+                            if ancilla_int not in prev_values:
+                                continue
+                            if weight2_prev_stab is not None:
+                                prev_anc_idx = prev_keys.index(weight2_prev_stab)
+                                prev_w6_idx = prev_values.index(ancilla_int)
+                                n_ancillas_prev = len(prev_keys)
+                                offset_previous = - (len(prev_keys) - prev_anc_idx)
+                                rec_prev = - n_ancillas_prev - n_ancillas - meas_data_qubits + offset_previous
+                                offset_prev_w6 = -(n_ancillas_prev - prev_w6_idx)
+                                rec_prev_w6 = - n_ancillas_prev - n_ancillas - meas_data_qubits + offset_prev_w6
+                                circuit.append("DETECTOR", [
+                                    stim.target_rec(rec_current),
+                                    stim.target_rec(rec_prev),
+                                    stim.target_rec(rec_prev_w6)
+                                ])
                     else:
                         # middle rounds: always valid regardless of zpm.p
                         rec_prev = rec_current - meas_per_round
@@ -705,7 +842,6 @@ class SyndromeExtractionStimCC:
 
                 #-------z stabilizer detectors---------
                 #for anc_idx in range(n_ancillas):
-                any_x_prep = any(zpm.p == BasisPrism.X for zpm in prism_pipes_zpm_temp.values())
                 print("z stabilizers bulk (meas_data_qubits)", meas_data_qubits)
                 for anc_idx, (stab, ancilla_int) in enumerate(mapping_ancillas_filtered.items()):
                     rec_current = -(n_ancillas - anc_idx)# - meas_data_qubits #if nonzeor data qubits measured, this must be included in offset
@@ -721,6 +857,9 @@ class SyndromeExtractionStimCC:
                         stabilizer_change = True #the elif below should not be triggered at z=0
                         any_meas_prior = False
                     if r == 0:
+                        if s!=0:
+                            prev_keys = list(mapping_ancillas_filtered_previous.keys())
+                            prev_values = list(mapping_ancillas_filtered_previous.values())
                         # first round: only deterministic if initialized in Z basis
                         if zpm_local.p == BasisPrism.Z:
                             circuit.append("DETECTOR", [stim.target_rec(rec_current)])
@@ -730,32 +869,87 @@ class SyndromeExtractionStimCC:
                             ) or (
                             not any_x_prep and zpm_local.p == BasisPrism.N and not stabilizer_change and any_meas_prior  
                             ):
-                            #rec_prev = rec_current - meas_per_round_previous -n_ancillas - meas_data_qubits #last n_ancillas about the previous ancilla meas
-                            prev_keys = list(mapping_ancillas_filtered_previous.keys())  # noqa: F821
-                            if stab in prev_keys:
-                                prev_anc_idx = prev_keys.index(stab)
-                                anc_idx_correction = anc_idx - prev_anc_idx  # how far off anc_idx is in the previous block
-                                print("Z anc_idx_correction", anc_idx_correction)
-                                print("rec current", rec_current)
-                                print("meas per round previous", meas_per_round_previous)
-                                print("n_ancillas", n_ancillas)
-                                print("meas_data_qubits", meas_data_qubits)
-                                print("num meas", circuit.num_measurements)
-                                #rec_prev = rec_current - meas_per_round_previous - n_ancillas - meas_data_qubits - anc_idx_correction
-                                offset_previous = - (len(prev_keys) - prev_anc_idx)
+                            if ancilla_int in prev_values:
+                                prev_anc_idx = prev_values.index(ancilla_int)
+                                n_ancillas_prev = len(prev_keys)
+                                offset_previous = - (n_ancillas_prev - prev_anc_idx)
                                 print("offset previous", offset_previous)
-                                #rec_prev = rec_current - n_ancillas - meas_data_qubits + offset_previous
                                 rec_prev = - 2*n_ancillas - meas_data_qubits + offset_previous
                                 circuit.append("DETECTOR", [
                                     stim.target_rec(rec_current),
                                     stim.target_rec(rec_prev)
                                 ])
                                 print("Z, r=0, double detector", rec_current, rec_prev, "->", circuit.num_measurements+rec_current, circuit.num_measurements+rec_prev)
-                            #else: #!TEMPORARY
-                            #    circuit.append("DETECTOR", [stim.target_rec(rec_current)]) #!ONLY TO REMEDY THAT elif cannot find all stabilizers as stabilizers change between different z
-                        #if zpm.p == BasisPrism.Z:
-                        #    circuit.append("DETECTOR", [stim.target_rec(rec_current)])
-                        #    print("Z detector time start:", rec_current)
+                        elif (stabilizer_change and any_meas_prior and not any_x_prep_previous and zpm_local.p == BasisPrism.N):
+                            #if the stabilizer changed shape and there was a prior meas in Z basis
+                            #then you need a detector that compares the current weight-4 stabilizer
+                            #with the measurement outcomes of the previous layer that complete it
+                            #to a weight-6 stabilizer
+                            prev_meas_z = total_mapped_data_qubits_z_previous  # noqa: F821
+                            extra_qubit_labels, extra_qubits = self.find_extra_qubits(stab)
+                            if extra_qubit_labels is None:
+                                continue
+                            missing_targets = []
+                            for q_label in extra_qubit_labels:
+                                if q_label in prev_meas_z:
+                                    pos_in_meas = prev_meas_z.index(q_label)
+                                    offset = -(len(prev_meas_z) - pos_in_meas + 2*n_ancillas) #difference to previous loop for X
+                                    missing_targets.append(stim.target_rec(offset))
+                            if len(missing_targets) == 2:
+                                    circuit.append("DETECTOR", [stim.target_rec(rec_current)] + missing_targets)
+                        elif (stabilizer_change and any_x_prep):
+                            #within a merge, build detectors for weight-2 and weight-6 stabilizers where the weight-2 is a subset of weight-6
+                            #i.e. if stabilizer changed and we have a horizontal z cs (aka any_x_prep)
+                            #i.e. we add detectors within the same layer of syndrome measurements
+                            #and furthermore the previous weight-4 corresponding measurement
+                            weight2_stab, weight2_anc = self.find_weight2_subset_same_layer(
+                                stab,
+                                mapping_ancillas_filtered
+                            )
+                            if weight2_stab is None:
+                                continue
+                            weight2_idx = list(mapping_ancillas_filtered.values()).index(weight2_anc)
+                            rec_weight2 = -(n_ancillas - weight2_idx)
+                            #also previous layer's weight-4 stabilizer, i.e. same anc_idx
+                            if ancilla_int not in prev_values:
+                                continue
+                            prev_anc_idx = prev_values.index(ancilla_int)
+                            n_ancillas_prev = len(prev_values)
+                            rec_previous = - 2 * n_ancillas - meas_data_qubits - (n_ancillas_prev - prev_anc_idx)
+                            circuit.append("DETECTOR", [
+                                stim.target_rec(rec_current),
+                                stim.target_rec(rec_weight2),
+                                stim.target_rec(rec_previous)
+                            ])
+                        elif (stabilizer_change and any_x_prep_previous):
+                            #after a split we do the same as above only shifted:
+                            #also add detectors that compare the same weight-4 X stabilizer with its previous weight-2 stabilizer
+                            #and the previous weight-6 stabilizer
+                            #this requires a horizontal z cs in the previous layer
+                            extra_qubit_labels, extra_qubits = self.find_extra_qubits(stab)
+                            print("extra qubits weight-2 stabilizer and stuff for horizontal z cs", extra_qubit_labels)
+                            if extra_qubit_labels is None:
+                                continue
+                            weight2_prev_stab = None
+                            for prev_stab in prev_keys:
+                                if set(prev_stab) == extra_qubits:
+                                    weight2_prev_stab = prev_stab
+                                    break
+                            if ancilla_int not in prev_values:
+                                continue
+                            if weight2_prev_stab is not None:
+                                prev_anc_idx = prev_keys.index(weight2_prev_stab)
+                                prev_w6_idx = prev_values.index(ancilla_int)
+                                n_ancillas_prev = len(prev_keys)
+                                offset_previous = - (len(prev_keys) - prev_anc_idx)
+                                rec_prev = - 2*n_ancillas - meas_data_qubits + offset_previous
+                                offset_prev_w6 = -(n_ancillas_prev - prev_w6_idx)
+                                rec_prev_w6 = -2 * n_ancillas - meas_data_qubits + offset_prev_w6
+                                circuit.append("DETECTOR", [
+                                    stim.target_rec(rec_current),
+                                    stim.target_rec(rec_prev),
+                                    stim.target_rec(rec_prev_w6)
+                                ])
                     else:
                         # middle rounds: always valid regardless of zpm.p
                         rec_prev = rec_current - meas_per_round
@@ -949,6 +1143,9 @@ class SyndromeExtractionStimCC:
                         circuit.append("DETECTOR", lst_det)
 
             mapping_ancillas_filtered_previous = mapping_ancillas_filtered.copy()  # noqa: F841
+            total_mapped_data_qubits_x_previous = total_mapped_data_qubits_x.copy()
+            total_mapped_data_qubits_z_previous = total_mapped_data_qubits_z.copy()
+            any_x_prep_previous, any_z_prep_previous = any_x_prep, any_z_prep
 
         self.assign_qubit_coords()
         circuit = self.add_qubit_coords_to_circuit(circuit)
@@ -997,22 +1194,25 @@ def run_experiment_sinter(
         num_workers: int = 2,
         max_shots: int = 10_000,
         max_errors: int = 100,
-        path: str = "default.csv"
+        path: str = "default.csv",
+        add_missing_detectors: bool = False,
 ) -> list[sinter.TaskStats]:
-    tasks = [
-        sinter.Task(
-            circuit=circuit_builder.run_all(
+    tasks = []
+    for idx, circuit_builder in enumerate(circuit_builders):
+        for p in p_values:
+            circuit = circuit_builder.run_all(
                 rounds=rounds[idx],
                 p_init=p,
                 p_gate2=p,
                 p_meas=p,
                 p_idle=p,
-            ),
-            json_metadata={'p': p, 'rounds': rounds[idx], 'code_idx': idx, 'd': circuit_builder.d},
-        )
-        for idx, circuit_builder in enumerate(circuit_builders)
-        for p in p_values
-    ]
+            )
+            if add_missing_detectors:
+                circuit = circuit + circuit.missing_detectors(unknown_input=False)
+            tasks.append(sinter.Task(
+                circuit=circuit,
+                json_metadata={'p': p, 'rounds': rounds[idx], 'code_idx': idx, 'd': circuit_builder.d},
+            ))
 
     stats = sinter.collect(
         num_workers=num_workers,

@@ -87,6 +87,7 @@ def plot_position_dict(
 
     def draw_mapping_label(ax, p, x, y):
         label = f"({p.x},{p.y})"
+        p = Position3DHex(p.x, p.y, 0)
         if mapping is not None and p in mapping:
             label += f"\n{mapping[p]}"   # <-- add value on new line
 
