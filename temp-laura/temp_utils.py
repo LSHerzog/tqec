@@ -246,3 +246,62 @@ def plot_position_dict_3color(
     ax.set_ylabel("y")
     ax.set_title("Stabilizers")
     plt.tight_layout()
+
+
+#----------plotting for rectangular coords------------
+def sort_by_angle(points):
+    cx = sum(p[0] for p in points) / len(points)
+    cy = sum(p[1] for p in points) / len(points)
+    return sorted(points, key=lambda p: np.arctan2(p[1] - cy, p[0] - cx))
+
+def plot_mapping_full(mapping_full, z):
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    all_stab_infos = []
+    for prism_data in mapping_full[z].values():
+        if prism_data.stabilizers:
+            all_stab_infos.extend(prism_data.stabilizers)
+
+    n_stabs = len(all_stab_infos)
+
+    def rainbow(i):
+        return cm.rainbow(i / max(n_stabs - 1, 1))
+
+    # plot stabilizer faces
+    for i, stab_info in enumerate(all_stab_infos):
+        color = rainbow(i)
+        coords = [(pe.rect[0], pe.rect[1]) for pe in stab_info.data_qubits]
+        coords = sort_by_angle(coords)
+        xs, ys = zip(*coords)
+        poly = Polygon(list(zip(xs, ys)), closed=True,
+                       facecolor=(*color[:3], 0.3),
+                       edgecolor=color, linewidth=1.5, zorder=2)
+        ax.add_patch(poly)
+
+
+    # plot data qubits
+    for prism_data in mapping_full[z].values():
+        for pe in prism_data.positions:
+            rx, ry = pe.rect
+            ax.scatter(rx, ry, color='blue', s=80, zorder=3)
+            txt = f"h({pe.hex.x},{pe.hex.y})\nr{pe.rect}\n#{pe.label}"
+            ax.annotate(txt, (rx, ry), xytext=(4, 4), textcoords='offset points', fontsize=6, color='blue')
+
+    # plot ancillas
+    # plot ancillas
+    for prism_data in mapping_full[z].values():
+        if prism_data.stabilizers:
+            for stab_info in prism_data.stabilizers:
+                if stab_info.ancilla:
+                    for anc in stab_info.ancilla:
+                        rx, ry = anc.rect
+                        ax.scatter(rx, ry, color='red', s=100, zorder=4, marker='*')
+                        txt = f"r{anc.rect}\n#{anc.label}"
+                        ax.annotate(txt, (rx, ry), xytext=(4, 4), textcoords='offset points', fontsize=6, color='red')
+
+    ax.set_aspect('equal')
+    ax.grid(True)
+    ax.set_title(f"z={z}")
+    plt.tight_layout()
+    plt.show()

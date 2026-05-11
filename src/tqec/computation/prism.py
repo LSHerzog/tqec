@@ -282,6 +282,54 @@ class Position3DHex(Vec3DHex):
             y = self.y + 1
         return Position3DHex(x,y,self.z)
 
+    def count_steps(self):
+        """Count the steps from the 0,0 position in triangle direction a and standard direction 3.
+
+        na = steps in triangle direction a
+        n3 = steps in standard direction 3
+        """
+        x,y=self.x,self.y
+        na = (x+y)//2
+        n3 = (x-y)//2
+        return na, n3
+
+    def rectangular_map(self):
+        r"""Return the mapping onto a rectangular graph.
+
+        A plaquette is mapped onto the rectangular grid like this:
+             0---0
+           /      \
+           0  x  x 0
+           \       /
+             0---0
+        where 0 denote data qubit positions that are turned into
+        rectangular coordinates via this fucnction
+        x denotes the ancilla position (not explicitly covered here,
+        but implicitly these spots are never occupied by a data qubit)
+
+        Starting on the top left position, and going clockwise
+        the original hex positions are translated in rectangular positions as:
+        0,0 -> 0,0
+        1,1 -> 1,0
+        2,0 -> 2,-1
+        3,-1 -> 1,-2
+        2,-2 -> 0,-2
+        1,-1 -> -1,-1
+        """
+        na, n3 = self.count_steps()
+        rec_x, rec_y = 0,0
+        if n3%2==0:
+            rec_x = na + 2 * (na // 2)
+        else:
+            rec_x = 4 * (na // 2) + (-1 if na % 2 == 0 else 2)
+        rec_y += -n3
+        return rec_x, rec_y
+
+    @staticmethod
+    def rectangular_neighbor(pos1, pos2):
+        """Check whether two rectangular positions are neighbors."""
+        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1]) == 1
+
 class BasisPrism(Enum):
     X = "X"
     Z = "Z"
