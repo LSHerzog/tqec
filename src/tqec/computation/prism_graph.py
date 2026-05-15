@@ -20,6 +20,7 @@ from tqec.computation.prism import (
     ZXPrism,
     prism_kind_from_string,
 )
+from tqec.utils.enums import Basis
 from tqec.utils.exceptions import TQECError
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,48 @@ class PrismGraph:
 
         """
         return find_correlation_surfaces(self.to_zx_graph().g)
+
+    def find_ver_hor_correlation_surface(self, correlation_surface: CorrelationSurface):
+        """Turn a correlation surface native to tqec into representation with more info.
+
+        Since a CorrelationSurface is just a list of edges with basis assignments,
+        it is necessary (for SE extraction) to know more than that in relation to the prismgraph.
+        Only correlation surfaces of horizontal pipes are relevant for the SE,
+        thus for each horizontal edge, determine based on hor/ver colors of the pipe
+        whether the relevant correlation surface is horizontal or vertical.
+        """
+        zx = self.to_zx_graph()
+        horizontal_pipes_cs: dict[PrismPipe, tuple[BasisPrism, str]] = {}
+        #per pipe we store a string "X" or "Z" and a string "hor" or "ver"
+        #the first determines the type of the CS  and the second whether it is about
+        #about a vertical cs = spreaded star operator
+        #or about a horizontl cs = product of stabilizers
+        for edge in correlation_surface.span:
+            u_id = edge.u.id
+            v_id = edge.v.id
+            pos_u = zx._positions[u_id]  # Position3DHex
+            pos_v = zx._positions[v_id]
+            #only relevant if horizontal pipe
+            if pos_u.z == pos_v.z:
+                #find the edge in the prsimgraph with pos_u and pos_v
+                for pipe in self.pipes:
+                    if (pipe.u.position == pos_u and pipe.v.position == pos_v) or (pipe.v.position == pos_u and pipe.u.position == pos_v):
+                        vertical_cs_type = pipe.kind.ver
+                        horizontal_cs_type = pipe.kind.hor
+                        if edge.u.basis == Basis.Z and edge.v.basis == Basis.Z:
+                            if vertical_cs_type == BasisPrism.Z:
+                                horizontal_pipes_cs.update({pipe : (BasisPrism.Z, "hor")})
+                            elif horizontal_cs_type == BasisPrism.Z:
+                                horizontal_pipes_cs.update({pipe : (BasisPrism.Z, "ver")})
+                        elif edge.u.basis == Basis.X and edge.v.basis == Basis.X:
+                            if vertical_cs_type == BasisPrism.X:
+                                horizontal_pipes_cs.update({pipe : (BasisPrism.X, "hor")})
+                            elif horizontal_cs_type == BasisPrism.X:
+                                horizontal_pipes_cs.update({pipe : (BasisPrism.X, "ver")})
+                        else:
+                            raise NotImplementedError("No mixed edges implemented yet.")
+                        break
+        return horizontal_pipes_cs
 
     def view_as_html(self):
         """Plot 3d Plot."""

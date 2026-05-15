@@ -41,6 +41,11 @@ class PositionedHexZX:
         """Return the 3D Hex positions of the vertices."""
         return self._positions
 
+    @property
+    def p2v(self) -> dict[Position3DHex, int]:
+        """Return the mapping from 3D positions to vertices."""
+        return {p: v for v, p in self._positions.items()}
+
     @staticmethod
     def outgoing_pipes_from_prism(prism: Prism, prism_graph: PrismGraph) -> list[PrismPipe]:
         """Return the pipes connecting the given Prism."""
