@@ -1751,7 +1751,7 @@ class SyndromeExtractionStimCC:
                     for prism_pipe in prism_pipes_zpm_temp.keys():
                         stabs = prism_pipes_stabs[prism_pipe].stabilizers
                         for stab in stabs:
-                            if len(stab.data_qubits) > 2:
+                            if len(stab.data_qubits) > 2 and stab.stab_type == "XZ": #no classical feedback for single type.
                                 neighbor_data = [
                                     qubit for qubit in stab.data_qubits
                                     if Position3DHex.rectangular_neighbor(qubit.rect, stab.ancilla[1].rect)
@@ -2010,7 +2010,7 @@ class SyndromeExtractionStimCC:
                         data_positions = prism_pipes_stabs[prism_pipe].positions
                         #measure stabs if higher weight, and also meas stab if weight=2
                         for stab in stabs:
-                            if len(stab.data_qubits) > 2:
+                            if len(stab.data_qubits) > 2 and stab.stab_type == "XZ": #no classical feedback for single type!
                                 #add classical feedback X^b, find neighboring data to ancilla[1]
                                 #only add classical feedback if actually MZ was done
                                 neighbor_data = [
@@ -2172,51 +2172,50 @@ class SyndromeExtractionStimCC:
                                     print("stabilizer changed shape, handle case!!! TODO")
                     else: #compare this with previous round meas
                         for stab in stabs:
-                            if len(stab.data_qubits) > 2:
-                                if stab.stab_type == "XZ" or stab.stab_type == "Z":
-                                    # z stabilizer
-                                    rec_current = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MZ"
-                                        and m.pipe_prism == prism_pipe
-                                        and m.z_value == z
-                                        and m.stabilizer == stab
-                                        and m.round == r
-                                    ).abs_rec - 1 - circuit.num_measurements
+                            if stab.stab_type == "XZ" or stab.stab_type == "Z":
+                                # z stabilizer
+                                rec_current = next(
+                                    m for m in meas_rec_lst
+                                    if m.meas_type == "MZ"
+                                    and m.pipe_prism == prism_pipe
+                                    and m.z_value == z
+                                    and m.stabilizer == stab
+                                    and m.round == r
+                                ).abs_rec - 1 - circuit.num_measurements
 
-                                    rec_prev = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MZ"
-                                        and m.pipe_prism == prism_pipe
-                                        and m.z_value == z
-                                        and m.stabilizer == stab
-                                        and m.round == r - 1
-                                    ).abs_rec - 1 - circuit.num_measurements
+                                rec_prev = next(
+                                    m for m in meas_rec_lst
+                                    if m.meas_type == "MZ"
+                                    and m.pipe_prism == prism_pipe
+                                    and m.z_value == z
+                                    and m.stabilizer == stab
+                                    and m.round == r - 1
+                                ).abs_rec - 1 - circuit.num_measurements
 
-                                    circuit.append("DETECTOR", [
-                                        stim.target_rec(rec_current), stim.target_rec(rec_prev)])
-                                if stab.stab_type == "XZ" or stab.stab_type == "X":
-                                    # x stabilizer
-                                    rec_current = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MX"
-                                        and m.pipe_prism == prism_pipe
-                                        and m.z_value == z
-                                        and m.stabilizer == stab
-                                        and m.round == r
-                                    ).abs_rec - 1 -circuit.num_measurements
+                                circuit.append("DETECTOR", [
+                                    stim.target_rec(rec_current), stim.target_rec(rec_prev)])
+                            if stab.stab_type == "XZ" or stab.stab_type == "X":
+                                # x stabilizer
+                                rec_current = next(
+                                    m for m in meas_rec_lst
+                                    if m.meas_type == "MX"
+                                    and m.pipe_prism == prism_pipe
+                                    and m.z_value == z
+                                    and m.stabilizer == stab
+                                    and m.round == r
+                                ).abs_rec - 1 -circuit.num_measurements
 
-                                    rec_prev = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MX"
-                                        and m.pipe_prism == prism_pipe
-                                        and m.z_value == z
-                                        and m.stabilizer == stab
-                                        and m.round == r - 1
-                                    ).abs_rec - 1 -circuit.num_measurements
+                                rec_prev = next(
+                                    m for m in meas_rec_lst
+                                    if m.meas_type == "MX"
+                                    and m.pipe_prism == prism_pipe
+                                    and m.z_value == z
+                                    and m.stabilizer == stab
+                                    and m.round == r - 1
+                                ).abs_rec - 1 -circuit.num_measurements
 
-                                    circuit.append("DETECTOR", [
-                                        stim.target_rec(rec_current), stim.target_rec(rec_prev)])
+                                circuit.append("DETECTOR", [
+                                    stim.target_rec(rec_current), stim.target_rec(rec_prev)])
 
             #----------final measurements + OBS--------------
             if z == max(self.z_values):
