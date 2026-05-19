@@ -1769,23 +1769,23 @@ class SyndromeExtractionStimCC:
                         print("stabilizer", stabilizer)
                         # normalize to z=0 and use a set for order-independent comparison
                         #stabilizer_flat = {Position3DHex(p.x, p.y, 0) for p in stabilizer}
-                        if len(stabilizer) > 2:
-                            stabilizer_flat = {Position3DHex(p.x, p.y, 0) for p in stabilizer}
-                            match = next(
-                                (m for m in meas_rec_lst
-                                if m.meas_type == meas_type
-                                and m.stabilizer is not None
-                                and {Position3DHex(pe.hex.x, pe.hex.y, 0) for pe in m.stabilizer.data_qubits if pe.hex is not None} == stabilizer_flat),
-                                None
-                            )
-                            print("stabilizer new:", match.stabilizer.data_qubits)
-                            if match is not None:
-                                print("abs_rec", match.abs_rec)
-                                print("match", match)
-                                rec = match.abs_rec - num_meas - 1
-                                tmp.append(stim.target_rec(rec))
-                        else:
-                            pass #TODO
+                        stabilizer_flat = {Position3DHex(p.x, p.y, 0) for p in stabilizer}
+                        z_value = stabilizer[0].z
+                        match = next(
+                            (m for m in meas_rec_lst
+                            if m.meas_type == meas_type
+                            and m.stabilizer is not None
+                            and m.z_value == z_value
+                            and {Position3DHex(pe.hex.x, pe.hex.y, 0) for pe in m.stabilizer.data_qubits if pe.hex is not None} == stabilizer_flat),
+                            None
+                        )
+                        print("stabilizer new:", match.stabilizer.data_qubits)
+                        if match is not None:
+                            print("abs_rec", match.abs_rec-1)
+                            print("match", match)
+                            rec = match.abs_rec - num_meas - 1
+                            tmp.append(stim.target_rec(rec))
+
                     meas_rec_horizontal.update({(cs_type, prism_pipe): tmp})
                 print("tmp", tmp)
             else:
@@ -1859,7 +1859,7 @@ class SyndromeExtractionStimCC:
         ) -> stim.Circuit:
         """Create a syndrome extraction circuit based on Bell Multiplexing."""
         #store the measurement record labes together with vital information
-        meas_rec_lst: list[MeasRecInfo] = []
+        meas_rec_lst: list[MeasRecInfo] = [] #IMPORTANT label starts from 1, not from 0 - i.e. offset by 1 between what is displayed in the circuit svg and the measreclst.
         cnot_order = ["bottom_z", "sides_z", "top_z","bottom_x", "sides_x", "top_x"] #just choose a convention
         circuit = stim.Circuit()
 
