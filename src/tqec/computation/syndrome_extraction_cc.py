@@ -1792,7 +1792,289 @@ class SyndromeExtractionStimCC:
                 raise ValueError("The alignment of CS must be ver or hor.")
         return meas_rec_vertical, meas_rec_horizontal
 
-    def add_triple_detector_changed_shape(
+    @staticmethod
+    def data_meas_rec_lst_pipe_prism(meas_rec_lst, z, rounds):
+        """Collect the pipes of z-1 where data qubit measurements were performed."""
+        meas_rec_lst_data = [
+            m for m in meas_rec_lst
+            if m.z_value == z-1 and m.stabilizer is None and m.round == rounds-1
+            ]
+        return meas_rec_lst_data
+
+    def add_triple_detector_changed_shape_split_opposite(
+        self,
+        stab,
+        meas_rec_lst,
+        circuit,
+        z,
+        r,
+        rounds,
+        meas_rec_lst_data
+        ):
+        """Add `triple` detector after split with the opposite basis as the data qubit meas.
+
+        weight-4 stabilizer of current z layer, with previous weight-2 and weight-6.
+        """
+        print("=========triple detector opposite==========")
+        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z-1]
+        prism_pipes_stabs_previous = self.mapping_full[z-1]
+
+        rec_lst = []
+        #determine which elements of data_meas_pipe_prism are neighbors of current stab
+        #for this we first need to find the previous weight-6 labels
+        flag = False
+        labels_weight6=None
+        stab_set_label = {el.label for el in stab.data_qubits}
+        for prism_pipe in prism_pipes_zpm_previous.keys():
+            stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
+            for stab_temp in stabs:
+                stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
+                if len(stab_temp_labels & stab_set_label) == 4:
+                    labels_weight6 = stab_temp_labels
+                    flag = True
+                    break
+            if flag:
+                break
+        neighbor_meas = [m for m in meas_rec_lst_data if m.label in labels_weight6]
+        if len(neighbor_meas)==0:
+            return
+
+        #what is the meas_type of these? take first element and take opposite
+        meas_types = [m.meas_type for m in neighbor_meas]
+        if not all([meas_types[0] == meas_type for meas_type in meas_types]):
+            raise ValueError("There are mixed measurement types on neighboring data qubits of previous z layer.")
+        if meas_types[0] == "MX":
+            meas_type = "MZ"
+        elif meas_types[0] == "MZ":
+            meas_type = "MX"
+
+        #add rec for current stab:
+        rec = next(
+            m for m in meas_rec_lst
+            if m.meas_type == meas_type
+            and m.z_value == z
+            and m.stabilizer == stab
+            and m.round == r
+        ).abs_rec - 1 - circuit.num_measurements
+        rec_lst.append(rec)
+        print("rec_lst", rec_lst)
+
+        #add the previous weight-6 stabilizer
+        flag = False
+        for prism_pipe in prism_pipes_zpm_previous.keys():
+            stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
+            for stab_temp in stabs:
+                stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
+                if len(stab_temp_labels & stab_set_label) == 4:
+                    rec = next(
+                        m for m in meas_rec_lst
+                        if m.meas_type == meas_type
+                        and m.z_value == z-1
+                        and m.stabilizer == stab_temp
+                        and m.round == rounds-1
+                    ).abs_rec - 1 - circuit.num_measurements
+                    rec_lst.append(rec)
+                    flag = True
+                    break
+            if flag:
+                break
+        print("rec_lst", rec_lst)
+
+        #add the weight-2 stabilizer
+        flag = False
+        for prism_pipe in prism_pipes_zpm_previous.keys():
+            stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
+            for stab_temp in stabs:
+                stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
+                if len(stab_temp_labels & labels_weight6) == 2 and len(stab_temp_labels)==2:
+                    rec = next(
+                        m for m in meas_rec_lst
+                        if m.meas_type == meas_type
+                        and m.z_value == z-1
+                        and m.stabilizer == stab_temp
+                        and m.round == rounds-1
+                    ).abs_rec - 1 - circuit.num_measurements
+                    rec_lst.append(rec)
+                    flag = True
+                    break
+            if flag:
+                break
+        print("rec_lst", rec_lst)
+
+        circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst])
+
+    def add_triple_detector_changed_shape_split_same(
+        self,
+        stab,
+        meas_rec_lst,
+        circuit,
+        z,
+        r,
+        rounds,
+        meas_rec_lst_data
+        ):
+        """Add `triple` detector after split with the same basis as the data qubit meas.
+
+        Strictly speaking, this is not a `triple` detector because the data qubit measurements are
+        not summarized in a stabilizer. Thus there will be more recs in the detector, overall
+        four: 1 current weight-4 stabilizer, 1 previous weight-6 stabilizer,
+        2 data qubit meas previous.
+        """
+        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z-1]
+        prism_pipes_stabs_previous = self.mapping_full[z-1]
+
+        rec_lst = []
+        #determine which elements of data_meas_pipe_prism are neighbors of current stab
+        #for this we first need to find the previous weight-6 labels
+        flag = False
+        labels_weight6=None
+        stab_set_label = {el.label for el in stab.data_qubits}
+        for prism_pipe in prism_pipes_zpm_previous.keys():
+            stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
+            for stab_temp in stabs:
+                stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
+                if len(stab_temp_labels & stab_set_label) == 4:
+                    labels_weight6 = stab_temp_labels
+                    flag = True
+                    break
+            if flag:
+                break
+        neighbor_meas = [m for m in meas_rec_lst_data if m.label in labels_weight6]
+        if len(neighbor_meas)==0:
+            return
+
+        #what is the meas_type of these? take first element
+        meas_types = [m.meas_type for m in neighbor_meas]
+        if not all([meas_types[0] == meas_type for meas_type in meas_types]):
+            raise ValueError("There are mixed measurement types on neighboring data qubits of previous z layer.")
+        meas_type = meas_types[0]
+
+        #add rec for current stab:
+        rec = next(
+            m for m in meas_rec_lst
+            if m.meas_type == meas_type
+            and m.z_value == z
+            and m.stabilizer == stab
+            and m.round == r
+        ).abs_rec - 1 - circuit.num_measurements
+        rec_lst.append(rec)
+
+        #add the previous weight-6 stabilizer
+        flag = False
+        for prism_pipe in prism_pipes_zpm_previous.keys():
+            stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
+            for stab_temp in stabs:
+                stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
+                if len(stab_temp_labels & stab_set_label) == 4:
+                    rec = next(
+                        m for m in meas_rec_lst
+                        if m.meas_type == meas_type
+                        and m.z_value == z-1
+                        and m.stabilizer == stab_temp
+                        and m.round == rounds-1
+                    ).abs_rec - 1 - circuit.num_measurements
+                    rec_lst.append(rec)
+                    flag = True
+                    break
+            if flag:
+                break
+
+        #add the two data qubit measurements.
+        for neighbor in neighbor_meas:
+            rec = neighbor.abs_rec - 1 - circuit.num_measurements
+            rec_lst.append(rec)
+
+        circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst])
+
+    def add_double_detector_changed_shape_merge_same(
+        self,
+        stab,
+        meas_rec_lst,
+        circuit,
+        z,
+        r,
+        rounds,
+        ):
+        """Add a double detector in the initialization basis.
+
+        This compares the current weight-6 stabilizer with the previous weight.4 stabilizer
+        it compares the stabilizers of the basis in which zpm.p is done.
+        these are naturally okay thus only two stabilizers needed
+        """
+        print("---------double detector same---------")
+        stab_labels = {pe.label for pe in stab.data_qubits}
+        #find the weight-4 stabilizer of the previous layer
+        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z-1]
+        prism_pipes_stabs_previous = self.mapping_full[z-1]
+        stab_weight4 = None
+        flag=False
+        for prism_pipe in prism_pipes_zpm_previous.keys():
+            stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
+            for stab_temp in stabs:
+                stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
+                if len(stab_temp_labels & stab_labels)==4 and len(stab_temp_labels)==4: #overlap 4 guarantees correct stab
+                    stab_weight4 = stab_temp
+                    flag = True
+                    break
+            if flag:
+                break
+        if stab_weight4 is None:
+            return
+
+        #find meas type based on initialization of adjacent pipe.
+        #both stabilizers here are strictly speaking part of the prism, not the pipe
+        #thus no knowledge about pipe initialization
+        prism_pipes_zpm_temp = self.prism_pipes_to_ZPM[z]
+        prism_pipes_stabs = self.mapping_full[z]
+        flag = False
+        for prism_pipe in prism_pipes_zpm_temp.keys():
+            stabs = prism_pipes_stabs[prism_pipe].stabilizers
+            for stab_temp in stabs:
+                stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
+                zpm = prism_pipes_zpm_temp[prism_pipe]
+                #take the weight-2 stabilizer that has overlap with current weight-6
+                #this is guaranteed in the adjacent pipe.
+                if len(stab_labels & stab_temp_labels)==2 and len(stab_temp_labels)==2:
+                    #this is the zpm we want
+                    if zpm.p == BasisPrism.X:
+                        meas_type = "MX"
+                    elif zpm.p == BasisPrism.Z:
+                        meas_type = "MZ"
+                    flag = True
+                    break
+            if flag:
+                break
+
+        print("stab weight 4", [el.label for el in stab_weight4.data_qubits])
+        print("meas type", meas_type)
+        rec_lst = []
+
+        #find the correct entry for previous weight-4 stabilizer
+        rec = next(
+            m for m in meas_rec_lst
+            if m.meas_type == meas_type
+            and m.z_value == z-1
+            and m.stabilizer == stab_weight4
+            and m.round == rounds-1
+        ).abs_rec - 1 - circuit.num_measurements
+        rec_lst.append(rec)
+        print("rec_lst", rec_lst)
+
+        #find the correct entry for current weight-6 stabilizer
+        rec = next(
+            m for m in meas_rec_lst
+            if m.meas_type == meas_type
+            and m.z_value == z
+            and m.stabilizer == stab
+            and m.round == r
+        ).abs_rec - 1 - circuit.num_measurements
+        rec_lst.append(rec)
+        print("rec_lst", rec_lst)
+
+        circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst]) #inplace replace
+
+
+    def add_triple_detector_changed_shape_merge_opposite(
         self,
         stab_weight6: StabilizerInfo,
         meas_rec_lst: list,
@@ -1856,9 +2138,8 @@ class SyndromeExtractionStimCC:
                     break
             if flag:
                 break
-        print("stab", stab)
-        print("stab weight 4", stab_weight4)
-        print("stab weight 2", stab_weight2)
+        if stab_weight4 is None: #this is a weight-6 stabilizer fully in the middle of the interface
+            return
         rec_lst = []
         #find the rec labels for the triple detector.
         #weight4 from previous layer
@@ -1870,7 +2151,7 @@ class SyndromeExtractionStimCC:
             and m.round == rounds-1
         ).abs_rec - 1 - circuit.num_measurements
         rec_lst.append(rec)
-        print("rec_lst", rec_lst, [el + circuit.num_measurements for el in rec_lst])
+
         for stab_temp in [stab_weight2, stab_weight6]:
             rec = next(
                 m for m in meas_rec_lst
@@ -1880,7 +2161,7 @@ class SyndromeExtractionStimCC:
                 and m.round == r
             ).abs_rec - 1 - circuit.num_measurements
             rec_lst.append(rec)
-            print("rec_lst", rec_lst, [el + circuit.num_measurements for el in rec_lst])
+
         circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst]) #inplace replace
 
     def add_trivial_detector_changed_shape(
@@ -2445,6 +2726,8 @@ class SyndromeExtractionStimCC:
                     active)
 
                 #---------add detectors based on meas_rec_lst-----------
+                #where did the data qubit measurement take place?
+                meas_rec_lst_data = self.data_meas_rec_lst_pipe_prism(meas_rec_lst, z, rounds)
                 for prism_pipe in prism_pipes_zpm_temp.keys():
                     zpm = prism_pipes_zpm_temp[prism_pipe]
                     stabs = prism_pipes_stabs[prism_pipe].stabilizers
@@ -2540,32 +2823,49 @@ class SyndromeExtractionStimCC:
                                     #triple detector in basis in which we do not initialize
                                     # (i.e. stabilizers which can form horizontal cs)
                                     # e.g. weight-4 in previous layer + current weight-6 and current weight-2
-                                    self.add_triple_detector_changed_shape(
+                                    self.add_triple_detector_changed_shape_merge_opposite(
                                         stab,
                                         meas_rec_lst, circuit,
                                         z, r, rounds)
+                                    #in the same basis as initialization just add double detectors
+                                    self.add_double_detector_changed_shape_merge_same(
+                                        stab,
+                                        meas_rec_lst,
+                                        circuit,
+                                        z,
+                                        r,
+                                        rounds
+                                    )
+                                    if len(meas_rec_lst_data) != 0:
+                                        #triple detector in the basis of data qubit measurements
+                                        #compare former weight-6 with current weight-4 and data meas on location of weight-2
+                                        #but not weight-2 stabilizer because this does not exist in this basis
+                                        #during split
+                                        print("meas rec lst data")
+                                        for m in meas_rec_lst_data:
+                                            print(m.label)
+                                        self.add_triple_detector_changed_shape_split_same(
+                                            stab,
+                                            meas_rec_lst,
+                                            circuit,
+                                            z,
+                                            r,
+                                            rounds,
+                                            meas_rec_lst_data
+                                        )
+                                        #triple detector in the opposite basis
+                                        #compare former weight-6 with former weight-2 and current weight-4
+                                        #during split
+                                        self.add_triple_detector_changed_shape_split_opposite(
+                                            stab,
+                                            meas_rec_lst,
+                                            circuit,
+                                            z,
+                                            r,
+                                            rounds,
+                                            meas_rec_lst_data
+                                        )
 
-                        #if (zpm.p in (BasisPrism.X, BasisPrism.Z)) and s!=0:
-                        #    #NEW
-                        #    #add triple detectors in basis which is NOT zpm.m or zpm.p
-                        #    #triple detector for merge
-                        #    #this will usually relevant for pipes! not prisms,
-                        #    # as prisms are usually initialized in the beginning
-                        #    if zpm.p == BasisPrism.X:
-                        #        stab_basis = "Z"
-                        #    elif zpm.p == BasisPrism.Z:
-                        #        stab_basis = "X"
-                        #    for stab in stabs:
-                        #        print("stab", stab.data_qubits)
-                        #        print("prism_pipe", prism_pipe)
-                        #        changed_shape = self.stabilizer_changed_shape_bell(z, prism_pipe, stab)
-                        #        if changed_shape:
-                        #            print("when we have a changed shape, the len of stab will be", len(stab))
-                        data_meas = False
-                        #TODO determine whether in previous z layer, there where data measurments.
-                        if (zpm.m in (BasisPrism.X, BasisPrism.Z)) and data_meas:
-                            #triple detector for split
-                            pass
 
                     else: #compare this with previous round meas
                         for stab in stabs:
