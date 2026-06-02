@@ -596,6 +596,20 @@ class PrismGraph:
         raise TQECError("`origin vertex` could not be found in given plaquette.")
 
     @staticmethod
+    def filter_isolated_patch_stabilizers(stabilizers: list[list[Position3DHex]]) -> list[list[Position3DHex]]:
+        """Remove weight-4 stabilizers that form an isolated group with no overlap with any other stabilizer."""
+        weight4 = [stab for stab in stabilizers if len(stab) == 4]
+        others = [stab for stab in stabilizers if len(stab) != 4]
+
+        isolated = []
+        for stab in weight4:
+            stab_set = set(stab)
+            touches_non_weight4 = any(stab_set & set(other) for other in others)
+            if not touches_non_weight4:
+                isolated.append(stab)
+        return [stab for stab in stabilizers if stab not in isolated]
+
+    @staticmethod
     def find_three_coloring_stabilizers(stabilizers: list[list[Position3DHex]]) -> dict:
         """Find an assignment of rgb colors to the stabilizers.
 
@@ -603,6 +617,10 @@ class PrismGraph:
         Uses the fact that origin vertices of weight-6 stabilizers form a 
         hexagonal lattice, which is 3-colorable by coordinate parity.
         """
+        #filter stabilizers that constitute a d=3 single patch of three stabilizers of each kind.
+        #they destroy the coloring and are not needed for the construction of horizontal correlatino surfaces
+        stabilizers = PrismGraph.filter_isolated_patch_stabilizers(stabilizers)
+
         weight6 = [stab for stab in stabilizers if len(stab) == 6]
         if not weight6:
             raise TQECError("No weight-6 stabilizer found to seed the 3-coloring.")
