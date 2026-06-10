@@ -1,5 +1,5 @@
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 import matplotlib.pyplot as plt
@@ -1910,7 +1910,7 @@ class SyndromeExtractionStimCC:
                     break
             if flag:
                 break
-        print("rec_lst", rec_lst)
+        print("rec_lst", rec_lst, [circuit.num_measurements+i for i in rec_lst])
 
         circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst])
 
@@ -1941,6 +1941,7 @@ class SyndromeExtractionStimCC:
         flag = False
         labels_weight6=None
         stab_set_label = {el.label for el in stab.data_qubits}
+        print("stab set label", stab_set_label)
         if len(stab_set_label) == 3 or len(stab_set_label) == 5:
             return #no search if we have weight-3 because those are single type stabilizers
         #but also single type weight-6 operators have to be excluded! this problem occurs only
@@ -2002,6 +2003,7 @@ class SyndromeExtractionStimCC:
             rec = neighbor.abs_rec - 1 - circuit.num_measurements
             rec_lst.append(rec)
 
+        print("rec lst  triple detector split same", rec_lst, [circuit.num_measurements+i for i in rec_lst])
         circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst])
 
     def add_double_detector_changed_shape_merge_same(
@@ -2107,6 +2109,7 @@ class SyndromeExtractionStimCC:
         weight-6 and weight-2 of the current layer. the weight-4 and weight-2 are subsets
         of the weight-6 stabilizer
         """
+        print("---------triple detector changed shape merge opposite----------")
         #usually, weight-4 stabilizer is given as input
         #find weight-6 stabilizer and weight-2 stabilizer
         stab_labels = {pe.label for pe in stab_weight6.data_qubits}
@@ -2180,6 +2183,7 @@ class SyndromeExtractionStimCC:
             ).abs_rec - 1 - circuit.num_measurements
             rec_lst.append(rec)
 
+        print("rec", [circuit.num_measurements-i for i in rec_lst])
         circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst]) #inplace replace
 
     def add_trivial_detector_changed_shape(
@@ -2995,21 +2999,67 @@ class SyndromeExtractionStimCC:
                     else:
                         raise TQECError("The last z requires data measurements in zpm.m")
 
-                # build set of prism positions reachable from CS start via horizontal pipes
-                min_z = min(prism.position.z for prism in prisms_in_cs)
-                cs_start_prisms = [prism for prism in prisms_in_cs if prism.position.z == min_z]
-                if len(cs_start_prisms) != 1:
-                    raise NotImplementedError(
-                        "Correlation surfaces that do not start in a single prism are not yet implemented."
-                    )
-                cs_start_position = cs_start_prisms[0].position
-                reachable_via_horizontal = {cs_start_position}
-                for pipe in horizontal_pipes_cs.keys():
-                    pipe_positions = {pipe.u.position, pipe.v.position}
-                    if pipe_positions & {Position3DHex(p.x, p.y, p.z) for p in reachable_via_horizontal}:
-                        reachable_via_horizontal |= pipe_positions
-                print("reachable via horizontal", reachable_via_horizontal)
+                # -------------------TODO put this in helper fct, and this is also bit overpowered i belive------------------------
+                # For each prism in prisms_in_obs, find its vertex in the ZX graph,
+                # then BFS through cs to the lowest-z node.
+                # If any edge on that path has both endpoints at the same z, add to reachable_via_horizontal.
+                reachable_via_horizontal: set[Position3DHex] = set()
 
+                min_z_in_cs = min(zx.positions[v].z for v in cs.span_vertices)
+                min_z_vertices = {v for v in cs.span_vertices if zx.positions[v].z == min_z_in_cs}
+
+                adjacency = cs._graph_view[0]  # {vid: {neighbor_vid: [ZXEdge]}}
+
+                for prism in prisms_in_obs:
+                    start_v = next(
+                        (v for v in cs.span_vertices if zx.positions[v] == prism.position),
+                        None
+                    )
+                    if start_v is None:
+                        continue
+
+                    # BFS tracking shortest distance and whether a horizontal edge was used.
+                    # State: (vertex_id, had_horizontal_edge_so_far)
+                    # We do NOT stop at the first min_z_vertex hit — we let BFS fully explore
+                    # all shortest paths to all min_z_vertices.
+                    queue = deque([(start_v, False)])
+                    # visited maps vertex -> shortest distance from start_v
+                    dist = {start_v: 0}
+                    # for each min_z vertex reached, record whether any shortest path used a horizontal edge
+                    min_z_results: dict[int, bool] = {}
+
+                    while queue:
+                        current_v, had_horizontal = queue.popleft()
+                        current_dist = dist[current_v]
+
+                        if current_v in min_z_vertices:
+                            # record result; OR with existing in case multiple paths arrive here
+                            min_z_results[current_v] = min_z_results.get(current_v, False) or had_horizontal
+                            # do NOT continue expanding from min_z targets
+                            continue
+
+                        for neighbor_v, edges in adjacency.get(current_v, {}).items():
+                            neighbor_dist = current_dist + 1
+                            if neighbor_v in dist and dist[neighbor_v] < neighbor_dist:
+                                continue  # already reached via a shorter path, skip
+                            edge_is_horizontal = zx.positions[current_v].z == zx.positions[neighbor_v].z
+                            new_had_horizontal = had_horizontal or edge_is_horizontal
+                            if neighbor_v not in dist:
+                                dist[neighbor_v] = neighbor_dist
+                                queue.append((neighbor_v, new_had_horizontal))
+                            elif dist[neighbor_v] == neighbor_dist:
+                                # same distance — another shortest path; re-enqueue to propagate horizontal flag
+                                queue.append((neighbor_v, new_had_horizontal))
+
+                    # add prism if ANY shortest path to ANY min_z vertex used a horizontal edge
+                    if any(min_z_results.values()):
+                        reachable_via_horizontal.add(
+                            Position3DHex(prism.position.x, prism.position.y, 0)
+                        )
+                #-------------------------------------
+
+
+                print("reachable via horizontal", reachable_via_horizontal)
                 #==final round of detectors based on stabilizers based on zpm.m==
                 for prism_pipe in prism_pipes_zpm_temp.keys():
                     zpm = prism_pipes_zpm_temp[prism_pipe]
@@ -3045,8 +3095,25 @@ class SyndromeExtractionStimCC:
                                           if set(op) & data_hex_set and set(op) & involved_hex_set]
                     star_ops_x_current = [op for op in star_ops_x
                                           if set(op) & data_hex_set and set(op) & involved_hex_set]
-                    print("star ops z current", star_ops_z_current)
-                    print("star ops x current", star_ops_x_current)
+                    print("star ops z current 1", star_ops_z_current)
+                    print("star ops x current 1", star_ops_x_current)
+
+                    #filter star_ops based on whether observable in CS and whether part of current data qubits
+                    data_positions_hex = {el.hex for el in data_positions}
+                    star_ops_z_current = [
+                        [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
+                        for op in star_ops_z_current
+                        if set(op) & data_hex_set and set(op) & data_positions_hex
+                    ]
+
+                    star_ops_x_current = [
+                        [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
+                        for op in star_ops_x_current
+                        if set(op) & data_hex_set and set(op) & data_positions_hex
+                    ]
+
+                    print("star ops z current 2", star_ops_z_current)
+                    print("star ops x current 2", star_ops_x_current)
 
                     if zpm.m == BasisPrism.Z:
                         for star_op_z in star_ops_z_current:
@@ -3064,6 +3131,7 @@ class SyndromeExtractionStimCC:
                                     and m.label == pe.label
                                 ).abs_rec - 1 - circuit.num_measurements
                                 obs_targets.append(stim.target_rec(rec))
+                                print("rec for obs", rec+circuit.num_measurements)
                             #add correlation surface measurements if needed!
                             star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_z}
                             star_prism_position = next(
@@ -3072,12 +3140,14 @@ class SyndromeExtractionStimCC:
                                         for pe in self.mapping_full[z][prism].positions)),
                                 None
                             )
+                            print("star_prism_position", star_prism_position)
                             if star_prism_position is not None:
                                 star_prism_position = Position3DHex(star_prism_position.x, star_prism_position.y, 0)
                             needs_cs_correction = (
                                 star_prism_position is not None
                                 and star_prism_position in reachable_via_horizontal
                             )
+                            print("needs_cs_correction", needs_cs_correction)
                             if needs_cs_correction:
                                 for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
                                     if key_type == BasisPrism.Z:
@@ -3085,12 +3155,19 @@ class SyndromeExtractionStimCC:
                                 for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
                                     if key_type == BasisPrism.Z:
                                         obs_targets += meas_lst
-                            circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                            elif star_prism_position is not None:
+                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                            else:
+                                continue
+                            print("obs_targets", obs_targets)
                     elif zpm.m == BasisPrism.X:
                         for star_op_x in star_ops_x_current:
                             obs_targets = []
                             for pos in star_op_x:
                                 pos_flat = Position3DHex(pos.x, pos.y, 0)
+                                print("pos flat", pos_flat)
+                                print("data positions", data_positions)
                                 pe = next(p for p in data_positions if p.hex == pos_flat)
                                 rec = next(
                                     m for m in meas_rec_lst
@@ -3101,6 +3178,7 @@ class SyndromeExtractionStimCC:
                                     and m.label == pe.label
                                 ).abs_rec - 1 - circuit.num_measurements
                                 obs_targets.append(stim.target_rec(rec))
+                                print("rec for obs", rec+circuit.num_measurements)
                             #add correlation surface measurements if needed!
                             star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_x}
                             star_prism_position = next(
@@ -3109,12 +3187,14 @@ class SyndromeExtractionStimCC:
                                         for pe in self.mapping_full[z][prism].positions)),
                                 None
                             )
+                            print("star_prism_position", star_prism_position)
                             if star_prism_position is not None:
                                 star_prism_position = Position3DHex(star_prism_position.x, star_prism_position.y, 0)
                             needs_cs_correction = (
                                 star_prism_position is not None
                                 and star_prism_position in reachable_via_horizontal
                             )
+                            print("needs_cs_correction", needs_cs_correction)
                             if needs_cs_correction:
                                 for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
                                     if key_type == BasisPrism.X:
@@ -3122,7 +3202,12 @@ class SyndromeExtractionStimCC:
                                 for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
                                     if key_type == BasisPrism.X:
                                         obs_targets += meas_lst
-                            circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                            elif star_prism_position is not None:
+                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                            else:
+                                continue
+                            print("obs_targets", obs_targets)
 
         return circuit, meas_rec_lst
 
@@ -3150,8 +3235,6 @@ class SyndromeExtractionStimCC:
         )
         self.meas_rec_lst = meas_rec_lst
         return circuit
-
-
 
 decoder_name = "tesseract"
 decoder_dict = tesseract_decoder.make_tesseract_sinter_decoders_dict()

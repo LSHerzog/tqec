@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 import networkx as nx
+import numpy as np
 from networkx import Graph
 
 from tqec.computation.correlation import find_correlation_surfaces
