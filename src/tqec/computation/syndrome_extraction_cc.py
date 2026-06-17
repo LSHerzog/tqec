@@ -2329,6 +2329,91 @@ class SyndromeExtractionStimCC:
                     stim.target_rec(rec) for rec in detector_idx_lst])
         return circuit
 
+    def add_qubit_coords_to_circuit_quadratic(self, circuit: stim.Circuit) -> stim.Circuit:
+        """Prepend QUBIT_COORDS to the circuit using the quadratic (rect) layout."""
+        coord_circuit = stim.Circuit()
+        for q, (x, y) in sorted(self.qubit_coords_quadratic.items()):
+            coord_circuit.append("QUBIT_COORDS", [q], [x, y])
+        coord_circuit += circuit
+        return coord_circuit
+
+    def assign_qubit_coords_quadratic(self, scale: int = 1):
+        """Build a label -> (x, y) coordinate mapping from the quadratic (rect) layout,
+        shifted so all coordinates are non-negative."""
+        raw_coords = {}
+
+        for z, prism_pipe_dct in self.mapping_full.items():
+            for prism_pipe, prism_data in prism_pipe_dct.items():
+                for pe in prism_data.positions:
+                    if pe.label is not None and pe.rect is not None:
+                        x, y = pe.rect
+                        coords = (x * scale, y * scale)
+                        if pe.label in raw_coords and raw_coords[pe.label] != coords:
+                            raise ValueError(
+                                f"Inconsistent coords for label {pe.label}: "
+                                f"{raw_coords[pe.label]} vs {coords}"
+                            )
+                        raw_coords[pe.label] = coords
+
+                if prism_data.stabilizers:
+                    for stab in prism_data.stabilizers:
+                        if stab.ancilla:
+                            for anc_pe in stab.ancilla:
+                                if anc_pe.label is not None and anc_pe.rect is not None:
+                                    x, y = anc_pe.rect
+                                    coords = (x * scale, y * scale)
+                                    if anc_pe.label in raw_coords and raw_coords[anc_pe.label] != coords:
+                                        raise ValueError(
+                                            f"Inconsistent coords for ancilla label {anc_pe.label}: "
+                                            f"{raw_coords[anc_pe.label]} vs {coords}"
+                                        )
+                                    raw_coords[anc_pe.label] = coords
+
+        # shift so all coordinates are >= 0
+        min_x = min(c[0] for c in raw_coords.values())
+        min_y = min(c[1] for c in raw_coords.values())
+
+        self.qubit_coords_quadratic = {
+            label: (x - min_x, y - min_y)
+            for label, (x, y) in raw_coords.items()
+        }
+        return self.qubit_coords_quadratic
+
+    def find_reachable_via_horizontal(self, cs, prisms_in_obs):
+        """Determine which of the observables (star operator on which patch) receives corrections.
+
+        This means that we have parities from measurements at the vertical/horizontal correlation
+        surfaces of horizontal pipes. They cannot be multiplied anywhere.
+        This method gives you the correct output for teleportation and CNOT circuits.
+        But it does NOT generalize to other structures!
+        """
+        zx = self.prism_graph.to_zx_graph()
+        reachable_via_horizontal: set[Position3DHex] = set()
+
+        cs_positions = {zx.positions[v] for v in cs.span_vertices}
+
+        min_z_in_cs = min(p.z for p in cs_positions)
+        max_z_in_cs = max(p.z for p in cs_positions)
+
+        min_z_xy = {(p.x, p.y) for p in cs_positions if p.z == min_z_in_cs}
+        max_z_xy = {(p.x, p.y) for p in cs_positions if p.z == max_z_in_cs}
+
+        all_graph_positions_max_z = [p for p in zx.positions.values() if p.z == max_z_in_cs]
+
+        if len(all_graph_positions_max_z) == 1:
+            shared_xy = max_z_xy  # single node in full graph at max_z: always reachable
+        else:
+            shared_xy = min_z_xy & max_z_xy
+
+        for prism in prisms_in_obs:
+            xy = (prism.position.x, prism.position.y)
+            if xy in shared_xy:
+                reachable_via_horizontal.add(
+                    Position3DHex(prism.position.x, prism.position.y, 0)
+                )
+        return reachable_via_horizontal
+
+
     def create_stim_circuit_bell_multiplexing(
             self,
             rounds,
@@ -2380,15 +2465,18 @@ class SyndromeExtractionStimCC:
                             all_current_qubits.extend(stab.ancilla)
 
             #initialization of data qubits
+            initialized_qubits = [] #need to track the currently initialized qubits to avoid incorrect detectors at r=0
             for prism_pipe in prism_pipes_zpm_temp.keys():
                 zpm = prism_pipes_zpm_temp[prism_pipe]
                 data_positions = prism_pipes_stabs[prism_pipe].positions
                 if zpm.p == BasisPrism.Z:
                     lst = [el.label for el in data_positions]
+                    initialized_qubits += data_positions
                     circuit.append("R", lst)
                     circuit.append("X_ERROR", lst, p_init)
                 elif zpm.p == BasisPrism.X:
                     lst = [el.label for el in data_positions]
+                    initialized_qubits += data_positions
                     circuit.append("RX", lst)
                     circuit.append("Z_ERROR", lst, p_init)
             #r rounds of error correction based on stabilizer_type
@@ -2791,11 +2879,21 @@ class SyndromeExtractionStimCC:
                         if zpm.p == BasisPrism.N and s != 0:
                             print("p = N and not s=0")
                             #IMPORTANT: if basis N, you need to compare to the previous z layer
-                            for stab in stabs:
+                            stabs_temp = [el for el in stabs
+                                          if len(el.data_qubits)!=3
+                                          and len(el.data_qubits)!=5
+                                          and len(el.data_qubits)!=2]
+                            for stab in stabs_temp:
                                 changed_shape = self.stabilizer_changed_shape_bell(z, prism_pipe, stab)
                                 print("changed_shape", changed_shape)
                                 if not changed_shape:
                                     print("not changed shape")
+                                    #skip the stabilizer if it contains a data qubit which was just re-initialized
+                                    print("initialized_qubits", initialized_qubits)
+                                    print("stab.data_qubits", stab.data_qubits)
+                                    if any(q in initialized_qubits for q in stab.data_qubits):
+                                        print("skipped a double detector")
+                                        continue
                                     #compare Z stabilizer to previous z layer (stab remained the same)
                                     print("Z")
                                     print("stab", stab)
@@ -2999,66 +3097,9 @@ class SyndromeExtractionStimCC:
                     else:
                         raise TQECError("The last z requires data measurements in zpm.m")
 
-                # -------------------TODO put this in helper fct, and this is also bit overpowered i belive------------------------
-                # For each prism in prisms_in_obs, find its vertex in the ZX graph,
-                # then BFS through cs to the lowest-z node.
-                # If any edge on that path has both endpoints at the same z, add to reachable_via_horizontal.
-                reachable_via_horizontal: set[Position3DHex] = set()
+                reachable_via_horizontal = self.find_reachable_via_horizontal(cs, prisms_in_obs)
 
-                min_z_in_cs = min(zx.positions[v].z for v in cs.span_vertices)
-                min_z_vertices = {v for v in cs.span_vertices if zx.positions[v].z == min_z_in_cs}
-
-                adjacency = cs._graph_view[0]  # {vid: {neighbor_vid: [ZXEdge]}}
-
-                for prism in prisms_in_obs:
-                    start_v = next(
-                        (v for v in cs.span_vertices if zx.positions[v] == prism.position),
-                        None
-                    )
-                    if start_v is None:
-                        continue
-
-                    # BFS tracking shortest distance and whether a horizontal edge was used.
-                    # State: (vertex_id, had_horizontal_edge_so_far)
-                    # We do NOT stop at the first min_z_vertex hit — we let BFS fully explore
-                    # all shortest paths to all min_z_vertices.
-                    queue = deque([(start_v, False)])
-                    # visited maps vertex -> shortest distance from start_v
-                    dist = {start_v: 0}
-                    # for each min_z vertex reached, record whether any shortest path used a horizontal edge
-                    min_z_results: dict[int, bool] = {}
-
-                    while queue:
-                        current_v, had_horizontal = queue.popleft()
-                        current_dist = dist[current_v]
-
-                        if current_v in min_z_vertices:
-                            # record result; OR with existing in case multiple paths arrive here
-                            min_z_results[current_v] = min_z_results.get(current_v, False) or had_horizontal
-                            # do NOT continue expanding from min_z targets
-                            continue
-
-                        for neighbor_v, edges in adjacency.get(current_v, {}).items():
-                            neighbor_dist = current_dist + 1
-                            if neighbor_v in dist and dist[neighbor_v] < neighbor_dist:
-                                continue  # already reached via a shorter path, skip
-                            edge_is_horizontal = zx.positions[current_v].z == zx.positions[neighbor_v].z
-                            new_had_horizontal = had_horizontal or edge_is_horizontal
-                            if neighbor_v not in dist:
-                                dist[neighbor_v] = neighbor_dist
-                                queue.append((neighbor_v, new_had_horizontal))
-                            elif dist[neighbor_v] == neighbor_dist:
-                                # same distance — another shortest path; re-enqueue to propagate horizontal flag
-                                queue.append((neighbor_v, new_had_horizontal))
-
-                    # add prism if ANY shortest path to ANY min_z vertex used a horizontal edge
-                    if any(min_z_results.values()):
-                        reachable_via_horizontal.add(
-                            Position3DHex(prism.position.x, prism.position.y, 0)
-                        )
-                #-------------------------------------
-
-
+                obs_idx = 0
                 print("reachable via horizontal", reachable_via_horizontal)
                 #==final round of detectors based on stabilizers based on zpm.m==
                 for prism_pipe in prism_pipes_zpm_temp.keys():
@@ -3155,9 +3196,9 @@ class SyndromeExtractionStimCC:
                                 for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
                                     if key_type == BasisPrism.Z:
                                         obs_targets += meas_lst
-                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
                             elif star_prism_position is not None:
-                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
                             else:
                                 continue
                             print("obs_targets", obs_targets)
@@ -3202,12 +3243,13 @@ class SyndromeExtractionStimCC:
                                 for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
                                     if key_type == BasisPrism.X:
                                         obs_targets += meas_lst
-                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
                             elif star_prism_position is not None:
-                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, 0)
+                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
                             else:
                                 continue
                             print("obs_targets", obs_targets)
+                    #obs_idx += 1
 
         return circuit, meas_rec_lst
 
@@ -3234,6 +3276,8 @@ class SyndromeExtractionStimCC:
             cs = cs
         )
         self.meas_rec_lst = meas_rec_lst
+        self.assign_qubit_coords_quadratic()
+        circuit = self.add_qubit_coords_to_circuit_quadratic(circuit)
         return circuit
 
 decoder_name = "tesseract"
