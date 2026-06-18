@@ -55,7 +55,33 @@ def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[
             list_ver = [pipe.kind.ver for pipe in neighbor_pipes]
             list_hor = [pipe.kind.hor for pipe in neighbor_pipes]
         else:
-            raise TQECError("We do not consider sole prisms for zx diagrams.")
+            # Isolated prism. Infer the ZX type from the preparation/measurement
+            # basis if possible.
+
+            if kind.prep is BasisPrism.X and kind.meas is BasisPrism.X:
+                return VertexType.Z, 0
+
+            if kind.prep is BasisPrism.Z and kind.meas is BasisPrism.Z:
+                return VertexType.X, 0
+
+            # Mixed X/Z boundaries are only allowed when one side is absent.
+            if (
+                kind.prep in (BasisPrism.X, BasisPrism.Z)
+                and kind.meas in (BasisPrism.X, BasisPrism.Z)
+                and kind.prep is not kind.meas
+            ):
+                raise TQECError(
+                    "Cannot determine ZX type of isolated prism with mismatched "
+                    "preparation and measurement bases."
+                )
+
+            if kind.prep is BasisPrism.X or kind.meas is BasisPrism.X:
+                return VertexType.Z, 0
+
+            if kind.prep is BasisPrism.Z or kind.meas is BasisPrism.Z:
+                return VertexType.X, 0
+
+            return VertexType.BOUNDARY, 0
 
         if len(neighbor_pipes_spatial) == 0 and len(neighbor_pipes_temporal) >= 2:
             #! TEMPORARY, if no spatial pipe, then just choose some color, as it is an identity - but empty would be best

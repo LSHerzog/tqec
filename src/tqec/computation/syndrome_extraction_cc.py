@@ -2421,7 +2421,7 @@ class SyndromeExtractionStimCC:
             p_meas: float,
             p_idle: float,
             p_gate2: float,
-            cs: CorrelationSurface,
+            cs_lst: list[CorrelationSurface],
         ) -> stim.Circuit:
         """Create a syndrome extraction circuit based on Bell Multiplexing."""
         #store the measurement record labes together with vital information
@@ -2429,19 +2429,40 @@ class SyndromeExtractionStimCC:
         cnot_order = ["bottom_z", "sides_z", "top_z","bottom_x", "sides_x", "top_x"] #just choose a convention
         circuit = stim.Circuit()
 
-        #only check the relevant horizontal correlation surfaces and whether ver/hor cs
-        horizontal_pipes_cs = self.prism_graph.find_ver_hor_correlation_surface(cs)
-        print("horizontal_pipes_cs")
-        for el in horizontal_pipes_cs:
-            print(el)
-        #later, for OBS_INCLUDE you need to know which prisms in the final z layer
-        #are actually involved in the given correlation surface
-        zx = self.prism_graph.to_zx_graph()
-        vertex_ids = cs.span_vertices
-        positions_in_cs = {vid: zx.positions[vid] for vid in vertex_ids}
-        prisms_in_cs = [prism for prism in self.prism_graph.prisms if prism.position in positions_in_cs.values()]
-        max_z = max(self.z_values)
-        prisms_in_obs = [prism for prism in prisms_in_cs if prism.position.z == max_z]
+        #special case if memory experiment
+        memory_experiment = (
+            len(cs_lst) == 0
+            and len(self.prism_graph.prisms) == 1
+            and len(self.prism_graph.pipes) == 0
+        )
+        if memory_experiment:
+            sole_prism = next(iter(self.prism_graph.prisms))
+
+            horizontal_pipes_cs_lst = [{}]
+            prisms_in_obs_lst = [[sole_prism]]
+
+            # run the observable loop once
+            cs_lst = [None]
+        else:
+            #only check the relevant horizontal correlation surfaces and whether ver/hor cs
+            horizontal_pipes_cs_lst = []
+            for cs in cs_lst:
+                horizontal_pipes_cs = self.prism_graph.find_ver_hor_correlation_surface(cs)
+                horizontal_pipes_cs_lst.append(horizontal_pipes_cs)
+
+            #later, for OBS_INCLUDE you need to know which prisms in the final z layer
+            #are actually involved in the given correlation surfaces
+            zx = self.prism_graph.to_zx_graph()
+            max_z = max(self.z_values)
+
+            prisms_in_obs_lst = []
+            for cs in cs_lst:
+                vertex_ids = cs.span_vertices
+                positions_in_cs = {vid: zx.positions[vid] for vid in vertex_ids}
+                prisms_in_cs = [prism for prism
+                                in self.prism_graph.prisms if prism.position in positions_in_cs.values()]
+                prisms_in_obs = [prism for prism in prisms_in_cs if prism.position.z == max_z]
+                prisms_in_obs_lst.append(prisms_in_obs)
 
         for s, z in enumerate(self.z_values):
             print(f"========================z={z}=======================")
@@ -3097,159 +3118,163 @@ class SyndromeExtractionStimCC:
                     else:
                         raise TQECError("The last z requires data measurements in zpm.m")
 
-                reachable_via_horizontal = self.find_reachable_via_horizontal(cs, prisms_in_obs)
+                for obs_idx, cs in enumerate(cs_lst):
+                    prisms_in_obs = prisms_in_obs_lst[obs_idx]
+                    horizontal_pipes_cs = horizontal_pipes_cs_lst[obs_idx]
+                    if cs is None: #memory experiment case
+                        reachable_via_horizontal = set()
+                    else:
+                        reachable_via_horizontal = self.find_reachable_via_horizontal(cs, prisms_in_obs)
 
-                obs_idx = 0
-                print("reachable via horizontal", reachable_via_horizontal)
-                #==final round of detectors based on stabilizers based on zpm.m==
-                for prism_pipe in prism_pipes_zpm_temp.keys():
-                    zpm = prism_pipes_zpm_temp[prism_pipe]
-                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                    data_positions = prism_pipes_stabs[prism_pipe].positions
-                    circuit = self.create_data_measurement_detectors(
-                        prism_pipe, stabs, zpm, meas_rec_lst, circuit, z, r
-                        )
-                    #==correlation surface for observable==
-                    num_meas = circuit.num_measurements
-                    meas_rec_vertical, meas_rec_horizontal = self.identify_correlation_surface_measurements(horizontal_pipes_cs, meas_rec_lst, num_meas)
-                    print("meas_rec_vertical", meas_rec_vertical)
-                    print("meas_rec_horizontal", meas_rec_horizontal)
-                    #==observable==
-                    star_ops_x, star_ops_z = self.result_dct[z]["star"]
-                    star_ops_x = [[Position3DHex(p.x, p.y, 0) for p in op] for op in star_ops_x]
-                    star_ops_z = [[Position3DHex(p.x, p.y, 0) for p in op] for op in star_ops_z]
-                    #find the star_ops_z that are related to the prisms in prisms_in_obs
-                    involved_data_qubits = []
-                    for prism in prisms_in_obs:
-                        involved_data_qubits += self.mapping_full[z][prism].positions
-                    print("FINAL OBS")
-                    print("prismpipe", prism_pipe)
-                    print("star_ops_x", star_ops_x)
-                    print("star_ops_z", star_ops_z)
-                    #filter both star_ops_x and star_ops_z based on
-                    #the involved data qubits and the current data_positions
-                    data_hex_set = {pe.hex for pe in data_positions if pe.hex is not None}
-                    involved_hex_set = {pe.hex for pe in involved_data_qubits if pe.hex is not None}
-                    print("data_hex_set", data_hex_set)
-                    print("involved hex set", involved_hex_set)
-                    star_ops_z_current = [op for op in star_ops_z
-                                          if set(op) & data_hex_set and set(op) & involved_hex_set]
-                    star_ops_x_current = [op for op in star_ops_x
-                                          if set(op) & data_hex_set and set(op) & involved_hex_set]
-                    print("star ops z current 1", star_ops_z_current)
-                    print("star ops x current 1", star_ops_x_current)
-
-                    #filter star_ops based on whether observable in CS and whether part of current data qubits
-                    data_positions_hex = {el.hex for el in data_positions}
-                    star_ops_z_current = [
-                        [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
-                        for op in star_ops_z_current
-                        if set(op) & data_hex_set and set(op) & data_positions_hex
-                    ]
-
-                    star_ops_x_current = [
-                        [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
-                        for op in star_ops_x_current
-                        if set(op) & data_hex_set and set(op) & data_positions_hex
-                    ]
-
-                    print("star ops z current 2", star_ops_z_current)
-                    print("star ops x current 2", star_ops_x_current)
-
-                    if zpm.m == BasisPrism.Z:
-                        for star_op_z in star_ops_z_current:
-                            print("star_op z", star_op_z)
-                            obs_targets = []
-                            for pos in star_op_z:
-                                pos_flat = Position3DHex(pos.x, pos.y, 0)
-                                pe = next(p for p in data_positions if p.hex == pos_flat)
-                                rec = next(
-                                    m for m in meas_rec_lst
-                                    if m.meas_type == "MZ"
-                                    and m.z_value == z
-                                    and m.stabilizer is None
-                                    and m.round == r
-                                    and m.label == pe.label
-                                ).abs_rec - 1 - circuit.num_measurements
-                                obs_targets.append(stim.target_rec(rec))
-                                print("rec for obs", rec+circuit.num_measurements)
-                            #add correlation surface measurements if needed!
-                            star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_z}
-                            star_prism_position = next(
-                                (prism.position for prism in prisms_in_obs
-                                if any(pe.hex is not None and Position3DHex(pe.hex.x, pe.hex.y, z) in star_op_hex_set
-                                        for pe in self.mapping_full[z][prism].positions)),
-                                None
+                    print("reachable via horizontal", reachable_via_horizontal)
+                    #==final round of detectors based on stabilizers based on zpm.m==
+                    for prism_pipe in prism_pipes_zpm_temp.keys():
+                        zpm = prism_pipes_zpm_temp[prism_pipe]
+                        stabs = prism_pipes_stabs[prism_pipe].stabilizers
+                        data_positions = prism_pipes_stabs[prism_pipe].positions
+                        circuit = self.create_data_measurement_detectors(
+                            prism_pipe, stabs, zpm, meas_rec_lst, circuit, z, r
                             )
-                            print("star_prism_position", star_prism_position)
-                            if star_prism_position is not None:
-                                star_prism_position = Position3DHex(star_prism_position.x, star_prism_position.y, 0)
-                            needs_cs_correction = (
-                                star_prism_position is not None
-                                and star_prism_position in reachable_via_horizontal
-                            )
-                            print("needs_cs_correction", needs_cs_correction)
-                            if needs_cs_correction:
-                                for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
-                                    if key_type == BasisPrism.Z:
-                                        obs_targets += meas_lst
-                                for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
-                                    if key_type == BasisPrism.Z:
-                                        obs_targets += meas_lst
-                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
-                            elif star_prism_position is not None:
-                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
-                            else:
-                                continue
-                            print("obs_targets", obs_targets)
-                    elif zpm.m == BasisPrism.X:
-                        for star_op_x in star_ops_x_current:
-                            obs_targets = []
-                            for pos in star_op_x:
-                                pos_flat = Position3DHex(pos.x, pos.y, 0)
-                                print("pos flat", pos_flat)
-                                print("data positions", data_positions)
-                                pe = next(p for p in data_positions if p.hex == pos_flat)
-                                rec = next(
-                                    m for m in meas_rec_lst
-                                    if m.meas_type == "MX"
-                                    and m.z_value == z
-                                    and m.stabilizer is None
-                                    and m.round == r
-                                    and m.label == pe.label
-                                ).abs_rec - 1 - circuit.num_measurements
-                                obs_targets.append(stim.target_rec(rec))
-                                print("rec for obs", rec+circuit.num_measurements)
-                            #add correlation surface measurements if needed!
-                            star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_x}
-                            star_prism_position = next(
-                                (prism.position for prism in prisms_in_obs
-                                if any(pe.hex is not None and Position3DHex(pe.hex.x, pe.hex.y, z) in star_op_hex_set
-                                        for pe in self.mapping_full[z][prism].positions)),
-                                None
-                            )
-                            print("star_prism_position", star_prism_position)
-                            if star_prism_position is not None:
-                                star_prism_position = Position3DHex(star_prism_position.x, star_prism_position.y, 0)
-                            needs_cs_correction = (
-                                star_prism_position is not None
-                                and star_prism_position in reachable_via_horizontal
-                            )
-                            print("needs_cs_correction", needs_cs_correction)
-                            if needs_cs_correction:
-                                for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
-                                    if key_type == BasisPrism.X:
-                                        obs_targets += meas_lst
-                                for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
-                                    if key_type == BasisPrism.X:
-                                        obs_targets += meas_lst
-                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
-                            elif star_prism_position is not None:
-                                circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
-                            else:
-                                continue
-                            print("obs_targets", obs_targets)
-                    #obs_idx += 1
+                        #==correlation surface for observable==
+                        num_meas = circuit.num_measurements
+                        meas_rec_vertical, meas_rec_horizontal = self.identify_correlation_surface_measurements(horizontal_pipes_cs, meas_rec_lst, num_meas)
+                        print("meas_rec_vertical", meas_rec_vertical)
+                        print("meas_rec_horizontal", meas_rec_horizontal)
+                        #==observable==
+                        star_ops_x, star_ops_z = self.result_dct[z]["star"]
+                        star_ops_x = [[Position3DHex(p.x, p.y, 0) for p in op] for op in star_ops_x]
+                        star_ops_z = [[Position3DHex(p.x, p.y, 0) for p in op] for op in star_ops_z]
+                        #find the star_ops_z that are related to the prisms in prisms_in_obs
+                        involved_data_qubits = []
+                        for prism in prisms_in_obs:
+                            involved_data_qubits += self.mapping_full[z][prism].positions
+                        print("FINAL OBS")
+                        print("prismpipe", prism_pipe)
+                        print("star_ops_x", star_ops_x)
+                        print("star_ops_z", star_ops_z)
+                        #filter both star_ops_x and star_ops_z based on
+                        #the involved data qubits and the current data_positions
+                        data_hex_set = {pe.hex for pe in data_positions if pe.hex is not None}
+                        involved_hex_set = {pe.hex for pe in involved_data_qubits if pe.hex is not None}
+                        print("data_hex_set", data_hex_set)
+                        print("involved hex set", involved_hex_set)
+                        star_ops_z_current = [op for op in star_ops_z
+                                            if set(op) & data_hex_set and set(op) & involved_hex_set]
+                        star_ops_x_current = [op for op in star_ops_x
+                                            if set(op) & data_hex_set and set(op) & involved_hex_set]
+                        print("star ops z current 1", star_ops_z_current)
+                        print("star ops x current 1", star_ops_x_current)
+
+                        #filter star_ops based on whether observable in CS and whether part of current data qubits
+                        data_positions_hex = {el.hex for el in data_positions}
+                        star_ops_z_current = [
+                            [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
+                            for op in star_ops_z_current
+                            if set(op) & data_hex_set and set(op) & data_positions_hex
+                        ]
+
+                        star_ops_x_current = [
+                            [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
+                            for op in star_ops_x_current
+                            if set(op) & data_hex_set and set(op) & data_positions_hex
+                        ]
+
+                        print("star ops z current 2", star_ops_z_current)
+                        print("star ops x current 2", star_ops_x_current)
+
+                        if zpm.m == BasisPrism.Z:
+                            for star_op_z in star_ops_z_current:
+                                print("star_op z", star_op_z)
+                                obs_targets = []
+                                for pos in star_op_z:
+                                    pos_flat = Position3DHex(pos.x, pos.y, 0)
+                                    pe = next(p for p in data_positions if p.hex == pos_flat)
+                                    rec = next(
+                                        m for m in meas_rec_lst
+                                        if m.meas_type == "MZ"
+                                        and m.z_value == z
+                                        and m.stabilizer is None
+                                        and m.round == r
+                                        and m.label == pe.label
+                                    ).abs_rec - 1 - circuit.num_measurements
+                                    obs_targets.append(stim.target_rec(rec))
+                                    print("rec for obs", rec+circuit.num_measurements)
+                                #add correlation surface measurements if needed!
+                                star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_z}
+                                star_prism_position = next(
+                                    (prism.position for prism in prisms_in_obs
+                                    if any(pe.hex is not None and Position3DHex(pe.hex.x, pe.hex.y, z) in star_op_hex_set
+                                            for pe in self.mapping_full[z][prism].positions)),
+                                    None
+                                )
+                                print("star_prism_position", star_prism_position)
+                                if star_prism_position is not None:
+                                    star_prism_position = Position3DHex(star_prism_position.x, star_prism_position.y, 0)
+                                needs_cs_correction = (
+                                    star_prism_position is not None
+                                    and star_prism_position in reachable_via_horizontal
+                                )
+                                print("needs_cs_correction", needs_cs_correction)
+                                if needs_cs_correction:
+                                    for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
+                                        if key_type == BasisPrism.Z:
+                                            obs_targets += meas_lst
+                                    for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
+                                        if key_type == BasisPrism.Z:
+                                            obs_targets += meas_lst
+                                    circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
+                                elif star_prism_position is not None:
+                                    circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
+                                else:
+                                    continue
+                                print("obs_targets", obs_targets)
+                        elif zpm.m == BasisPrism.X:
+                            for star_op_x in star_ops_x_current:
+                                obs_targets = []
+                                for pos in star_op_x:
+                                    pos_flat = Position3DHex(pos.x, pos.y, 0)
+                                    print("pos flat", pos_flat)
+                                    print("data positions", data_positions)
+                                    pe = next(p for p in data_positions if p.hex == pos_flat)
+                                    rec = next(
+                                        m for m in meas_rec_lst
+                                        if m.meas_type == "MX"
+                                        and m.z_value == z
+                                        and m.stabilizer is None
+                                        and m.round == r
+                                        and m.label == pe.label
+                                    ).abs_rec - 1 - circuit.num_measurements
+                                    obs_targets.append(stim.target_rec(rec))
+                                    print("rec for obs", rec+circuit.num_measurements)
+                                #add correlation surface measurements if needed!
+                                star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_x}
+                                star_prism_position = next(
+                                    (prism.position for prism in prisms_in_obs
+                                    if any(pe.hex is not None and Position3DHex(pe.hex.x, pe.hex.y, z) in star_op_hex_set
+                                            for pe in self.mapping_full[z][prism].positions)),
+                                    None
+                                )
+                                print("star_prism_position", star_prism_position)
+                                if star_prism_position is not None:
+                                    star_prism_position = Position3DHex(star_prism_position.x, star_prism_position.y, 0)
+                                needs_cs_correction = (
+                                    star_prism_position is not None
+                                    and star_prism_position in reachable_via_horizontal
+                                )
+                                print("needs_cs_correction", needs_cs_correction)
+                                if needs_cs_correction:
+                                    for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
+                                        if key_type == BasisPrism.X:
+                                            obs_targets += meas_lst
+                                    for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
+                                        if key_type == BasisPrism.X:
+                                            obs_targets += meas_lst
+                                    circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
+                                elif star_prism_position is not None:
+                                    circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
+                                else:
+                                    continue
+                                print("obs_targets", obs_targets)
 
         return circuit, meas_rec_lst
 
@@ -3260,7 +3285,7 @@ class SyndromeExtractionStimCC:
         p_meas: float,
         p_idle: float,
         p_gate2: float,
-        cs: CorrelationSurface
+        cs_lst: list[CorrelationSurface]
         ):
         """Run everything for a superdense circuit."""
         self.retrieve_stabilizers_operators()
@@ -3273,7 +3298,7 @@ class SyndromeExtractionStimCC:
             p_meas = p_meas,
             p_idle = p_idle,
             p_gate2 = p_gate2,
-            cs = cs
+            cs_lst = cs_lst
         )
         self.meas_rec_lst = meas_rec_lst
         self.assign_qubit_coords_quadratic()
@@ -3293,7 +3318,7 @@ def run_experiment_sinter(
         path: str = "default.csv",
         add_missing_detectors: bool = False,
         se_type: str = "run_all",
-        cs = []#empty
+        cs_lst = []#empty
 ) -> list[sinter.TaskStats]:
     tasks = []
     for idx, circuit_builder in enumerate(circuit_builders):
@@ -3315,7 +3340,7 @@ def run_experiment_sinter(
                     p_gate2=p,
                     p_meas=p,
                     p_idle=p,
-                    cs = cs
+                    cs_lst = cs_lst
                 )
 
             if add_missing_detectors:
@@ -3333,12 +3358,24 @@ def run_experiment_sinter(
         max_shots=max_shots,
         max_errors=max_errors,
         print_progress=True,
-        save_resume_filepath=path
+        save_resume_filepath=path,
+        count_observable_error_combos=True
     )
     return stats
 
 
 def plot_experiment_sinter(stats: list[sinter.TaskStats], d_lst: list[int]):
+    """Stats is what is plotted.
+
+    If you have multiple observables that were tracked separately,
+    you have to apply split_counts_for_observables(stats) first and
+    plot the respective observable's outcome.
+
+    Args:
+        stats (list[sinter.TaskStats]): sinter output
+        d_lst (list[int]): distances for plotting
+
+    """
     fig, ax = plt.subplots()
     sinter.plot_error_rate(
         ax=ax,
