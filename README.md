@@ -1,3 +1,7 @@
+> [!NOTE]
+> **This fork extends the original [tqec/tqec](https://github.com/tqec/tqec) with an initial implementation for color code pipe diagrams.**
+> Examples and scripts to reproduce simulations can be found in the folder `scripts-cococo`.
+
 *This is a rapidly evolving project - documentation and materials from previous recordings may become outdated quickly. If you encounter any inconsistencies or have questions, please [open an issue](https://github.com/tqec/tqec/issues/new/choose).*
 
 ---
