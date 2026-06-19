@@ -16,31 +16,34 @@ Triangle orientation follows the mhwombat coordinate scheme:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
+
 import numpy as np
 import numpy.typing as npt
-from dataclasses import dataclass, field
-from enum import Enum
 
 # ---------------------------------------------------------------------------
 # Color definitions
 # ---------------------------------------------------------------------------
 
+
 class PrismColor(Enum):
     """Colors used for prism faces."""
-    X    = "X"      # X basis → red  (matching tqec convention)
-    Z    = "Z"      # Z basis → blue
-    N    = "N"      # No basis → fully transparent
-    SIDE = "SIDE"   # Side faces → always fully transparent
-    PORT = "PORT"   # Port → fully transparent
+
+    X = "X"  # X basis → red  (matching tqec convention)
+    Z = "Z"  # Z basis → blue
+    N = "N"  # No basis → fully transparent
+    SIDE = "SIDE"  # Side faces → always fully transparent
+    PORT = "PORT"  # Port → fully transparent
 
     @property
     def rgba(self) -> tuple[float, float, float, float]:
         return {
-            "X":    (0.8, 0.2, 0.2, 1.0),   # red,  fully opaque
-            "Z":    (0.2, 0.2, 0.8, 1.0),   # blue, fully opaque
-            "N":    (0.0, 0.0, 0.0, 0.0),   # fully transparent
-            "SIDE": (0.0, 0.0, 0.0, 0.0),   # fully transparent
-            "PORT": (0.0, 0.0, 0.0, 0.0),   # fully transparent
+            "X": (0.8, 0.2, 0.2, 1.0),  # red,  fully opaque
+            "Z": (0.2, 0.2, 0.8, 1.0),  # blue, fully opaque
+            "N": (0.0, 0.0, 0.0, 0.0),  # fully transparent
+            "SIDE": (0.0, 0.0, 0.0, 0.0),  # fully transparent
+            "PORT": (0.0, 0.0, 0.0, 0.0),  # fully transparent
         }[self.value]
 
     @property
@@ -52,13 +55,15 @@ class PrismColor(Enum):
 # Low-level mesh primitives
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TriangleFace:
     """A triangular face defined by 3 vertices and a color.
 
     Vertices are in counter-clockwise order when viewed from outside.
     """
-    vertices: npt.NDArray[np.float64]   # shape (3, 3) — three xyz points
+
+    vertices: npt.NDArray[np.float64]  # shape (3, 3) — three xyz points
     color: PrismColor
 
     def get_normal(self) -> npt.NDArray[np.float64]:
@@ -74,7 +79,8 @@ class QuadFace:
     Vertices are in counter-clockwise order: bottom-left, bottom-right,
     top-right, top-left when viewed from outside.
     """
-    vertices: npt.NDArray[np.float64]   # shape (4, 3) — four xyz points
+
+    vertices: npt.NDArray[np.float64]  # shape (4, 3) — four xyz points
     color: PrismColor
 
     def get_normal(self) -> npt.NDArray[np.float64]:
@@ -108,6 +114,7 @@ class QuadFace:
 # Triangle vertex helpers
 # ---------------------------------------------------------------------------
 
+
 def _triangle_vertices_2d(pointing_up: bool) -> npt.NDArray[np.float64]:
     """Return the 2D (x, y) vertices of a unit equilateral triangle.
 
@@ -116,20 +123,27 @@ def _triangle_vertices_2d(pointing_up: bool) -> npt.NDArray[np.float64]:
 
     Returns:
         Array of shape (3, 2) with the triangle vertices.
+
     """
     h = np.sqrt(3) / 2  # height of equilateral triangle with side 1
     if pointing_up:
-        return np.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.5, h  ],
-        ], dtype=np.float64)
+        return np.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.5, h],
+            ],
+            dtype=np.float64,
+        )
     else:
-        return np.array([
-            [0.0, h  ],
-            [1.0, h  ],
-            [0.5, 0.0],
-        ], dtype=np.float64)
+        return np.array(
+            [
+                [0.0, h],
+                [1.0, h],
+                [0.5, 0.0],
+            ],
+            dtype=np.float64,
+        )
 
 
 def _make_horizontal_triangle(
@@ -160,19 +174,24 @@ def _make_side_quad(
         z_bottom: z coordinate of the bottom edge.
         z_top:    z coordinate of the top edge.
         color:    Face color.
+
     """
-    verts = np.array([
-        [v0_2d[0], v0_2d[1], z_bottom],  # bottom-left
-        [v1_2d[0], v1_2d[1], z_bottom],  # bottom-right
-        [v1_2d[0], v1_2d[1], z_top   ],  # top-right
-        [v0_2d[0], v0_2d[1], z_top   ],  # top-left
-    ], dtype=np.float64)
+    verts = np.array(
+        [
+            [v0_2d[0], v0_2d[1], z_bottom],  # bottom-left
+            [v1_2d[0], v1_2d[1], z_bottom],  # bottom-right
+            [v1_2d[0], v1_2d[1], z_top],  # top-right
+            [v0_2d[0], v0_2d[1], z_top],  # top-left
+        ],
+        dtype=np.float64,
+    )
     return QuadFace(verts, color)
 
 
 # ---------------------------------------------------------------------------
 # PrismGeometry: all faces for one prism kind + orientation
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PrismGeometry:
@@ -182,7 +201,9 @@ class PrismGeometry:
         bottom_face:  The triangular prep face (z=0).
         top_face:     The triangular meas face (z=1).
         side_faces:   The 3 rectangular lateral faces.
+
     """
+
     bottom_face: TriangleFace
     top_face: TriangleFace
     side_faces: list[QuadFace]
@@ -199,6 +220,7 @@ class PrismGeometry:
 # ---------------------------------------------------------------------------
 # Factory: build PrismGeometry from ZXPrism kind + position parity
 # ---------------------------------------------------------------------------
+
 
 def build_prism_geometry(
     prep_color: PrismColor,
@@ -221,6 +243,7 @@ def build_prism_geometry(
 
     Returns:
         A :py:class:`PrismGeometry` with all 5 faces defined.
+
     """
     verts_2d = _triangle_vertices_2d(pointing_up)
 
@@ -242,13 +265,13 @@ def build_prism_geometry(
 # PrismGeometries: registry for all ZXPrism kinds
 # ---------------------------------------------------------------------------
 
+
 def _basis_to_color(basis_str: str) -> PrismColor:
     return {
         "X": PrismColor.X,
         "Z": PrismColor.Z,
         "N": PrismColor.N,
     }[basis_str.upper()]
-
 
 
 def get_prism_geometry(
@@ -258,7 +281,7 @@ def get_prism_geometry(
     z_bottom: float = 0.0,
     z_top: float = 1.0,
 ) -> PrismGeometry:
-    """Convenience function: get prism geometry from basis strings.
+    """Get prism geometry from basis strings.
 
     Args:
         prep:        Prep basis as string: "X", "Z", or "N".
@@ -266,6 +289,7 @@ def get_prism_geometry(
         pointing_up: True for ▲ (even x), False for ▽ (odd x).
         z_bottom:    Bottom z coordinate.
         z_top:       Top z coordinate.
+
     """
     return build_prism_geometry(
         prep_color=_basis_to_color(prep),
@@ -280,6 +304,7 @@ def get_prism_geometry(
 # PipeGeometry: geometry for a pipe connecting two adjacent prisms
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PipeGeometry:
     """All faces making up a single pipe between two adjacent prisms.
@@ -292,7 +317,9 @@ class PipeGeometry:
 
     Attributes:
         faces: All quad faces of the pipe (colored and transparent).
+
     """
+
     faces: list[QuadFace]
 
     def all_triangle_faces(self) -> list[TriangleFace]:
@@ -330,14 +357,17 @@ class PipeGeometry:
 
 _H = np.sqrt(3) / 2  # height of unit equilateral triangle
 
-_EDGE_DATA: dict[str, tuple[
-    tuple[float, float],  # vertex A offset from (ox, oy)
-    tuple[float, float],  # vertex B offset from (ox, oy)
-    tuple[float, float],  # outward perpendicular (unit vector)
-]] = {
-    "bottom": ((0.0, 0.0), (1.0, 0.0),        (0.0,  -1.0)),
-    "right":  ((1.0, 0.0), (0.5, _H),          (_H,    0.5)),
-    "left":   ((0.5, _H),  (0.0, 0.0),         (-_H,   0.5)),
+_EDGE_DATA: dict[
+    str,
+    tuple[
+        tuple[float, float],  # vertex A offset from (ox, oy)
+        tuple[float, float],  # vertex B offset from (ox, oy)
+        tuple[float, float],  # outward perpendicular (unit vector)
+    ],
+] = {
+    "bottom": ((0.0, 0.0), (1.0, 0.0), (0.0, -1.0)),
+    "right": ((1.0, 0.0), (0.5, _H), (_H, 0.5)),
+    "left": ((0.5, _H), (0.0, 0.0), (-_H, 0.5)),
 }
 
 
@@ -375,6 +405,7 @@ def get_horizontal_pipe_geometry(
 
     Returns:
         A :py:class:`PipeGeometry` with 4 quad faces.
+
     """
     transparent = PrismColor.SIDE
     ver_color = _basis_to_color(ver) if ver and ver != "N" else transparent
@@ -390,40 +421,64 @@ def get_horizontal_pipe_geometry(
     ax2, ay2 = ax + depth * px, ay + depth * py
     bx2, by2 = bx + depth * px, by + depth * py
 
-    va  = np.array([ax,  ay ])
-    vb  = np.array([bx,  by ])
+    va = np.array([ax, ay])
+    vb = np.array([bx, by])
     va2 = np.array([ax2, ay2])
     vb2 = np.array([bx2, by2])
 
     # inner/outer flush with prism faces → transparent
-    inner = _make_side_quad(va,  vb,  z_bottom, z_top, transparent)
+    inner = _make_side_quad(va, vb, z_bottom, z_top, transparent)
     outer = _make_side_quad(va2, vb2, z_bottom, z_top, transparent)
     # top/bottom slabs → hor
-    cap_bottom = QuadFace(np.array([
-        [ax,  ay,  z_bottom],
-        [bx,  by,  z_bottom],
-        [bx2, by2, z_bottom],
-        [ax2, ay2, z_bottom],
-    ], dtype=np.float64), hor_color)
-    cap_top = QuadFace(np.array([
-        [ax,  ay,  z_top],
-        [bx,  by,  z_top],
-        [bx2, by2, z_top],
-        [ax2, ay2, z_top],
-    ], dtype=np.float64), hor_color)
+    cap_bottom = QuadFace(
+        np.array(
+            [
+                [ax, ay, z_bottom],
+                [bx, by, z_bottom],
+                [bx2, by2, z_bottom],
+                [ax2, ay2, z_bottom],
+            ],
+            dtype=np.float64,
+        ),
+        hor_color,
+    )
+    cap_top = QuadFace(
+        np.array(
+            [
+                [ax, ay, z_top],
+                [bx, by, z_top],
+                [bx2, by2, z_top],
+                [ax2, ay2, z_top],
+            ],
+            dtype=np.float64,
+        ),
+        hor_color,
+    )
     # end_a/end_b (visible side walls) → ver
-    end_a = QuadFace(np.array([
-        [ax,  ay,  z_bottom],
-        [ax2, ay2, z_bottom],
-        [ax2, ay2, z_top   ],
-        [ax,  ay,  z_top   ],
-    ], dtype=np.float64), ver_color)
-    end_b = QuadFace(np.array([
-        [bx,  by,  z_bottom],
-        [bx2, by2, z_bottom],
-        [bx2, by2, z_top   ],
-        [bx,  by,  z_top   ],
-    ], dtype=np.float64), ver_color)
+    end_a = QuadFace(
+        np.array(
+            [
+                [ax, ay, z_bottom],
+                [ax2, ay2, z_bottom],
+                [ax2, ay2, z_top],
+                [ax, ay, z_top],
+            ],
+            dtype=np.float64,
+        ),
+        ver_color,
+    )
+    end_b = QuadFace(
+        np.array(
+            [
+                [bx, by, z_bottom],
+                [bx2, by2, z_bottom],
+                [bx2, by2, z_top],
+                [bx, by, z_top],
+            ],
+            dtype=np.float64,
+        ),
+        ver_color,
+    )
 
     return PipeGeometry(faces=[inner, outer, cap_bottom, cap_top, end_a, end_b])
 
@@ -431,6 +486,7 @@ def get_horizontal_pipe_geometry(
 # ---------------------------------------------------------------------------
 # Vertical pipe: fills the z-gap between two prisms at the same (x, y)
 # ---------------------------------------------------------------------------
+
 
 def get_vertical_pipe_geometry(
     hor: str | None,
@@ -463,6 +519,7 @@ def get_vertical_pipe_geometry(
 
     Returns:
         A :py:class:`PipeGeometry` with 3 quad faces (side walls only).
+
     """
     transparent = PrismColor.SIDE
     ver_color = _basis_to_color(ver) if ver and ver != "N" else transparent

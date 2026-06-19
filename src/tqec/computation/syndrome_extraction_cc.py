@@ -1,16 +1,13 @@
 import re
-from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 import matplotlib.pyplot as plt
-import networkx as nx
-import numpy as np
 import sinter
 import stim
 import tesseract_decoder
 
 from tqec.computation.correlation import CorrelationSurface
-from tqec.computation.pipe_prism import PrismPipe, PrismPipeKind
+from tqec.computation.pipe_prism import PrismPipe
 from tqec.computation.prism import BasisPrism, Port, Position3DHex, Prism, ZXPrism
 from tqec.computation.prism_graph import PrismGraph, StabilizerProductResult
 from tqec.utils.exceptions import TQECError
@@ -24,8 +21,11 @@ class PositionEntry:
     rect: tuple[int, int]
     label: int | None
 
+
 @dataclass
 class StabilizerInfo:
+    """Store infos about stabilizers."""
+
     data_qubits: list[PositionEntry]
     top: list[PositionEntry]
     bottom: list[PositionEntry]
@@ -33,21 +33,29 @@ class StabilizerInfo:
     ancilla: list[PositionEntry]
     stab_type: str
 
+
 @dataclass
 class PrismData:
+    """Store data about prisms."""
+
     positions: list[PositionEntry] = field(default_factory=list)
     stabilizers: list[StabilizerInfo] | None = field(default_factory=list)
 
+
 @dataclass
 class MeasRecInfo:
-    meas_type: str #ancilla_mz, ancilla_mx, data_mz, data_mx
+    """Track measurements in the stim circuit via this class."""
+
+    meas_type: str  # ancilla_mz, ancilla_mx, data_mz, data_mx
     pipe_prism: PrismPipe | Prism
     stabilizer: StabilizerInfo | None
     abs_rec: int
     z_value: int
     round: int
-    label: int #qubit label on which the M is done
-    tick : int
+    label: int  # qubit label on which the M is done
+    tick: int
+
+
 @dataclass(frozen=True)
 class ZPM:
     """Represent a single ``ZPM`` string.
@@ -72,6 +80,7 @@ class ZPM:
             (``X``, ``Z``, or ``N`` if no basis is fixed).
         m: measurement basis of the qubit at the end of the layer
             (``X``, ``Z``, or ``N`` if no basis is fixed).
+
     """
 
     z: int
@@ -115,6 +124,28 @@ class ZPM:
 
 
 class SyndromeExtractionStimCC:
+    """Generate Stim syndrome-extraction circuits for color code pipe diagrams.
+
+    The class translates a :class:`PrismGraph` representation of a computation
+    into a fault-tolerant Stim circuit. Central is the method `run_all_superdense`,
+    which creates the circuit. As a user, this is the only method which is needed.
+
+    Parameters
+    ----------
+    prism_graph:
+        Prism-graph description of the computation.
+    d:
+        Code distance of the color code represented by the prism graph.
+
+    Notes
+    -----
+    The implementation assumes a valid prism graph without open ports and is
+    designed for simulations of color-code computations represented by prism
+    diagrams. Spatial endings are not yet supported. It is assumed that data
+    measurements are performed at the max z value of the diagram.
+
+    """
+
     def __init__(self, prism_graph: PrismGraph, d: int):
         """Construct syndrome extraction circuits for a prism_graph."""
         self.prism_graph = prism_graph
@@ -123,20 +154,31 @@ class SyndromeExtractionStimCC:
 
     def retrieve_stabilizers_operators(self):
         """Retrieve all stabilizers and logical ooperators for all z in the prism_graph."""
-        result_dct = {z : dict() for z in self.z_values} #each of those dicts will contain stabilizers, operator products and star operators
+        result_dct = {z: dict() for z in self.z_values}
+        # each of those dicts will contain stabilizers, operator products and star operators
         for z in self.z_values:
-            stabs_x, stabs_z, _, dct_single_type_stabs, dct_patch_stabilizers = self.prism_graph.stabilizers_timeslice(z, self.d)
+            (
+                stabs_x,
+                stabs_z,
+                _,
+                dct_single_type_stabs,
+                dct_patch_stabilizers,
+            ) = self.prism_graph.stabilizers_timeslice(z, self.d)
             result_dct[z].update({"stabs": [stabs_x, stabs_z]})
-            #if self.d > 5: #not possible for d=3, d=5
+            # if self.d > 5: #not possible for d=3, d=5
             star_ops_x, star_ops_z = self.prism_graph.star_operator_timeslice(z, self.d)
             try:
-                result = self.prism_graph.stabilizer_product_timeslice(z, self.d, dct_single_type_stabs, dct_patch_stabilizers, testing = True)
+                result = self.prism_graph.stabilizer_product_timeslice(
+                    z, self.d, dct_single_type_stabs, dct_patch_stabilizers, testing=True
+                )
             except TQECError as e:
-                #for d=3 the 3 coloring cannot be created for a single patch as it does not contain weight 6 stabilizers
-                #but we do not care and skip this because for a single patch there's no stabilizer product anyway
+                # for d=3 the 3 coloring cannot be created for a single patch as it
+                # does not contain weight 6 stabilizers
+                # but we do not care and skip this because for a single patch
+                # there's no stabilizer product anyway
                 allowed_messages = [
                     "No weight-6 stabilizer found to seed the 3-coloring.",
-                    "Could not resolve coloring — stuck with ambiguous boundary stabilizers."
+                    "Could not resolve coloring — stuck with ambiguous boundary stabilizers.",
                 ]
                 if not any(msg in str(e) for msg in allowed_messages):
                     raise TQECError("There is some issue with the stabilizer product construction.")
@@ -153,96 +195,7 @@ class SyndromeExtractionStimCC:
 
             result_dct[z].update({"star": [star_ops_x, star_ops_z]})
             result_dct[z].update({"product": result})
-            #result_dct[z].update({"assignment": self.prism_graph.prism_pipes_to_data_qubits_full})
         self.result_dct = result_dct
-
-    def create_mapping(self):
-        """Create a mapping of each data_qubit position to an int."""
-        #positions = set()
-        #for z in self.z_values:
-        #    [stabs_x, stabs_z] = self.result_dct[z]["stabs"]
-        #    stabs = stabs_x + stabs_z #double stabs removed
-        #    positions_temp = {item for sublist in stabs for item in sublist}
-        #    #set all z values to 0, because we want the mapping agnostically of z
-        #    positions_temp = {Position3DHex(x = pos.x, y = pos.y, z = 0) for pos in positions_temp}
-        #    positions.update(positions_temp)
-        #self.mapping = {value: key for key,value in enumerate(positions)}
-        positions_ordered = []
-        seen = set()
-
-        # collect all prisms first, then all pipes — consistent with any z layer
-        # use z=0 projected positions
-        for z in self.z_values:
-            prism_pipes_data = self.prism_graph.prism_pipes_to_data_qubits_full[z]
-
-            # first pass: prisms only
-            for pipe_prism, data_qubits in prism_pipes_data.items():
-                if isinstance(pipe_prism, Prism):
-                    for pos in data_qubits:
-                        flat = Position3DHex(x=pos.x, y=pos.y, z=0)
-                        if flat not in seen:
-                            positions_ordered.append(flat)
-                            seen.add(flat)
-
-            # second pass: pipes only
-            for pipe_prism, data_qubits in prism_pipes_data.items():
-                if isinstance(pipe_prism, PrismPipe):
-                    for pos in data_qubits:
-                        flat = Position3DHex(x=pos.x, y=pos.y, z=0)
-                        if flat not in seen:
-                            positions_ordered.append(flat)
-                            seen.add(flat)
-
-        self.mapping = {pos: idx for idx, pos in enumerate(positions_ordered)}
-
-    def check_matrix(self, z:int, stab_type: str):
-        """Create check matrix given some stabilizers and a mapping."""
-        mapping = self.mapping
-        if stab_type == "Z":
-            stabs = self.result_dct[z]["stabs"][1]
-        elif stab_type == "X":
-            stabs = self.result_dct[z]["stabs"][0]
-        else:
-            raise ValueError("Wrong stab_type input. must be X or Z string.")
-        cols = len(mapping)
-        rows = len(stabs)
-        arr = np.zeros((rows, cols), dtype = int)
-        for k,stab in enumerate(stabs):
-            stab_ad = [Position3DHex(x=pos.x, y=pos.y, z=0) for pos in stab]#set z=0 for all positions in stab
-            stab_int = [mapping[pos] for pos in stab_ad]
-            for label in stab_int:
-                arr[k, label] = 1
-        return arr
-
-    @staticmethod
-    def tanner_graph(arr : np.array):
-        """Create the tanner graph of given check matrix arr."""
-        rows, cols = arr.shape
-        tg = nx.Graph()
-        # qubit nodes
-        tg.add_nodes_from([f"q{i}" for i in range(cols)])
-        # check nodes
-        tg.add_nodes_from([f"c{i}" for i in range(rows)])
-        for i in range(rows):
-            for j in range(cols):
-                if arr[i, j] == 1:
-                    tg.add_edge(f"c{i}", f"q{j}")
-        return tg
-
-    @staticmethod
-    def tanner_coloring(tg: nx.Graph):
-        """Retrieve edge coloring of given Tanner graph."""
-        line_graph = nx.line_graph(tg)
-        edge_coloring = nx.coloring.greedy_color(line_graph, strategy="largest_first")
-        return edge_coloring
-
-    @staticmethod
-    def regroup_by_color(edge_coloring: dict) -> dict:
-        """Regroup edge coloring dict from {edge: color} to {color: list[edges]}."""
-        grouped = defaultdict(list)
-        for edge, color in edge_coloring.items():
-            grouped[color].append(edge)
-        return dict(grouped)
 
     @staticmethod
     def canonical(stab):
@@ -272,148 +225,15 @@ class SyndromeExtractionStimCC:
         dct_stabilizers_all = {}
         for z in self.z_values:
             dct_stabilizers = self.reorder_stabilizers(z)
-            dct_stabilizers_all.update({z : dct_stabilizers})
+            dct_stabilizers_all.update({z: dct_stabilizers})
         self.dct_stabilizers_all = dct_stabilizers_all
 
-    def create_mapping_ancillas(self):
-        #!TODO CORRECT THIS
-        #ordered version of ancilla mapping, i.e. labels consecutive labels belong to a patch
-        #single ancilla per plaquette, even for the weight-2 stabilizers
-        positions_ordered = []
-        seen = set()
-        max_label = max(list(self.mapping.values()))
-        print("max_label", max_label)
-
-        weight_6_stabilizers = []
-        weight_4_stabilizers = []
-
-        def is_stab_new(stab, seen):
-            """
-            Returns True if stab is genuinely new, i.e. not already represented in seen.
-            A stab is considered already seen if:
-            - it is directly in seen, OR
-            - it is a weight-4 stab and a weight-6 stab in seen contains it (overlap == 4), OR
-            - it is a weight-6 stab and a weight-4 stab in seen is contained in it (overlap == 4)
-            """
-            if stab in seen:
-                return False
-            stab_set = set(stab)
-            for seen_stab in seen:
-                if len(stab_set & set(seen_stab)) == 4:
-                    return False
-            return True
-
-        #collect prisms first, then pipes
-        for z in self.z_values:
-            prism_pipes_data = self.prism_graph.prism_pipes_to_data_qubits_full[z]
-            stabilizers = self.dct_stabilizers_all[z]#this contains also info about type of stabilizer!
-            stabilizers = {
-                tuple([Position3DHex(pos.x, pos.y, 0) for pos in stab]) : val
-                for stab, val in stabilizers.items()}
-            print("stabilizers", stabilizers)
-            #handle single type stabilizers ('X', 'Z') as pipe stabilizers and double type ('XZ') stabilizers as patch stabilizers
-            #prisms only
-            for pipe_prism, data_qubits in prism_pipes_data.items():
-                data_qubits_temp = [Position3DHex(x=pos.x, y=pos.y, z=0) for pos in data_qubits]
-                if isinstance(pipe_prism, Prism):
-                    #filter only double type stabilizers
-                    stabilizers_temp = [stab for stab, stab_type in stabilizers.items() if stab_type == "XZ"]
-                if isinstance(pipe_prism, PrismPipe):
-                    #filter only single type stabilizers
-                    stabilizers_temp = [stab for stab, stab_type in stabilizers.items() if stab_type == "X" or stab_type == "Z"]
-                print("stabilizers_temp")
-                for stab in stabilizers_temp:
-                    if set(stab) & set(data_qubits_temp) != 0:
-                        #!TODO make stab not in seen more complex. not only set comparison, but actually a weight-4 and weight-6 stabilizer can be equivalent
-                        if is_stab_new(stab, seen):
-                            seen.add(stab)
-                            positions_ordered.append(stab)
-                            if len(stab) == 4:
-                                weight_4_stabilizers.append(stab)
-                            elif len(stab) == 6:
-                                weight_6_stabilizers.append(stab)
-
-        mapping_ancillas = {pos: idx + max_label for idx, pos in enumerate(positions_ordered)}
-
-        # for each weight-6 stabilizer, check if a weight-4 stabilizer is fully contained in it
-        # if so, assign the same label; otherwise assign a new label
-        # vice versa: for each weight-4 stabilizer, check if it is fully contained in a weight-6 stabilizer
-        mapping_subset = {}
-        for w6_stab in weight_6_stabilizers:
-            w6_set = set(w6_stab)
-            parent_label = None
-            for w4_stab in weight_4_stabilizers:
-                if len(set(w4_stab) & w6_set) == 4:
-                    parent_label = mapping_ancillas[w4_stab]
-                    break
-            if parent_label is not None:
-                mapping_subset[w6_stab] = parent_label
-            else:
-                mapping_subset[w6_stab] = mapping_ancillas[w6_stab]
-
-        for w4_stab in weight_4_stabilizers:
-            w4_set = set(w4_stab)
-            for w6_stab in weight_6_stabilizers:
-                if len(w4_set & set(w6_stab)) == 4:
-                    mapping_subset[w4_stab] = mapping_subset[w6_stab]
-                    break
-
-        mapping_ancillas.update(mapping_subset)
-        self.mapping_ancillas = mapping_ancillas
-
-    """
-    def create_mapping_ancillas(self):
-        #Construct a mapping of ancilla labels (> mapping labels) with their stabilizer affiliations.
-        #!FIRST SIMPLE VERSION WHERE ALL STABS HAVE OWN ANCILLA
-        #! adapt integer assignment if less ancillas will be assumed later
-        max_label = max(list(self.mapping.values()))
-        union = set()
-        for dct in self.dct_stabilizers_all.values():
-            for stab in dct.keys():
-                # project to z = 0
-                stab_flat = tuple(
-                    Position3DHex(x=p.x, y=p.y, z=0)
-                    for p in stab
-                )
-                union.add(stab_flat)
-        #if weight-4 and weight-6 stabilizers have max overlap, assign same ancilla
-        mapping_ancillas = {}
-        stab_sets = {stab: set(stab) for stab in union}
-        weight6 = [stab for stab in union if len(stab) == 6]
-        weight4 = [stab for stab in union if len(stab) == 4]
-        mapping_ancillas = {}
-        current_label = max_label + 1
-        for stab in weight6:
-            mapping_ancillas[stab] = current_label
-            current_label += 1
-        for stab4 in weight4:
-            set4 = stab_sets[stab4]
-            assigned = False
-            for stab6 in weight6:
-                if set4.issubset(stab_sets[stab6]):
-                    mapping_ancillas[stab4] = mapping_ancillas[stab6]
-                    assigned = True
-                    break
-            if not assigned:
-                mapping_ancillas[stab4] = current_label
-                current_label += 1
-        others = [stab for stab in union if len(stab) not in (4, 6)]
-        for stab in others:
-            mapping_ancillas[stab] = current_label
-            current_label += 1
-        self.mapping_ancillas = mapping_ancillas
-        """
-
-
-
-    #! per timeslice define the init/meas basis per qubit or if none of those actions is performed
-    #! based on pipe color or prism color
     def meas_prep_data_qubits(self):
         """Find meas/prep instructions for each data qubit for the whole pipe diagram."""
-        #retrieve assignment of data qubits per patch / prism
+        # retrieve assignment of data qubits per patch / prism
         prism_pipes_to_data_qubits_full = self.prism_graph.prism_pipes_to_data_qubits_full
-        #collect ZPM per prism or pipe
-        prism_pipes_to_ZPM = dict()
+        # collect ZPM per prism or pipe
+        prism_pipes_to_ZPM = dict()  # noqa: N806
         for z, prism_pipe_dct in prism_pipes_to_data_qubits_full.items():
             temp_dct = {}
             for pipe_prism in prism_pipe_dct.keys():
@@ -431,48 +251,11 @@ class SyndromeExtractionStimCC:
                         raise ValueError("For a stim circuit, no open ports are allowed.")
                 else:
                     raise ValueError("internal issue.")
-                temp_dct.update({pipe_prism : zpm})
+                temp_dct.update({pipe_prism: zpm})
             prism_pipes_to_ZPM.update({z: temp_dct})
-        #note that prism_pipes_to_data_qubits_full and prsim_pipes_to_ZPM should be used together in create_stim_circuit
+        # note that prism_pipes_to_data_qubits_full and prsim_pipes_to_ZPM
+        # should be used together in create_stim_circuit
         self.prism_pipes_to_ZPM = prism_pipes_to_ZPM
-
-    def assign_qubit_coords(self, scale: int = 20):
-        """Create crumble positions."""
-        self.qubit_coords = {}
-
-        # --- data qubits ---
-        for pos, q in self.mapping.items():
-            cx, cy, _ = pos.to_euclidean(scale=1.0)
-
-            ix = int(round(cx * scale))
-            iy = int(round(cy * scale))
-
-            self.qubit_coords[q] = (ix, iy)
-
-        # --- ancillas ---
-        for stab, anc in self.mapping_ancillas.items():
-            coords = [
-                Position3DHex(p.x, p.y, 0).to_euclidean(scale=1.0)[:2]
-                for p in stab
-            ]
-
-            cx = sum(c[0] for c in coords) / len(coords)
-            cy = sum(c[1] for c in coords) / len(coords)
-
-            ix = int(round(cx * scale))
-            iy = int(round(cy * scale))
-
-            self.qubit_coords[anc] = (ix, iy)
-
-    def add_qubit_coords_to_circuit(self, circuit: stim.Circuit) -> stim.Circuit:
-        """Prepend QUBIT_COORDS to the circuit."""
-        coord_circuit = stim.Circuit()
-
-        for q, (x, y) in sorted(self.qubit_coords.items()):
-            coord_circuit.append("QUBIT_COORDS", [q], [x, y])
-
-        coord_circuit += circuit
-        return coord_circuit
 
     @staticmethod
     def get_zpm_for_stab(
@@ -485,15 +268,9 @@ class SyndromeExtractionStimCC:
         """Assign ZPM value from given stab."""
         stab_set = set(stab)
 
-        #normalize to z=0
-        stabs_x = [
-            [Position3DHex(el.x, el.y, 0) for el in stab]
-            for stab in stabs_x
-        ]
-        stabs_z = [
-            [Position3DHex(el.x, el.y, 0) for el in stab]
-            for stab in stabs_z
-        ]
+        # normalize to z=0
+        stabs_x = [[Position3DHex(el.x, el.y, 0) for el in stab] for stab in stabs_x]
+        stabs_z = [[Position3DHex(el.x, el.y, 0) for el in stab] for stab in stabs_z]
 
         in_x = any(stab_set == set(s) for s in stabs_x)
         in_z = any(stab_set == set(s) for s in stabs_z)
@@ -504,127 +281,16 @@ class SyndromeExtractionStimCC:
         else:
             allowed_types = (PrismPipe,)
 
-        print("in_z", in_z)
-        print("in_x", in_x)
-        print("allowed_types", allowed_types)
-
         for pipe_prism, data_qubits in prism_pipes_data_temp.items():
-
             if not isinstance(pipe_prism, allowed_types):
                 continue
 
-            dq_set = {
-                Position3DHex(q.x, q.y, 0)
-                for q in data_qubits
-            }
+            dq_set = {Position3DHex(q.x, q.y, 0) for q in data_qubits}
 
             if stab_set & dq_set:
                 return prism_pipes_zpm_temp[pipe_prism]
 
         return None
-
-    def stabilizer_changed_shape(
-        self,
-        stab: tuple,
-        ancilla_label: int,
-        mapping_ancillas_filtered_previous: dict,
-    ) -> bool:
-        """Check if a stabilizer changed shape compared to the previous z-layer.
-
-        A stabilizer 'changes shape' when its ancilla label is shared with
-        another stabilizer (i.e. a weight-4 stab is a subset of a weight-6 stab
-        and they share an ancilla), AND the stab that was active under that
-        ancilla label in the previous layer has a different support than the
-        current one.
-
-        Args:
-            stab: the canonical stabilizer tuple (z=0 projected) of the current layer.
-            ancilla_label: the integer ancilla label for this stabilizer.
-            mapping_ancillas_filtered_previous: the mapping_ancillas_filtered
-                dict from the previous z-layer.
-
-        Returns:
-            True if the stabilizer support changed shape, False otherwise.
-        """
-        # Find which stabilizer(s) in the previous layer shared this ancilla label
-        prev_stabs_with_same_ancilla = [
-            prev_stab
-            for prev_stab, prev_label in mapping_ancillas_filtered_previous.items()
-            if prev_label == ancilla_label
-        ]
-
-        if not prev_stabs_with_same_ancilla:
-            # Ancilla didn't exist in previous layer at all
-            return True
-
-        # There should be at most one (by construction), but be safe
-        prev_stab = prev_stabs_with_same_ancilla[0]
-
-        # Compare support: same set of qubits = same shape
-        return set(stab) != set(prev_stab)
-
-    def find_extra_qubits(self, stab: tuple) -> tuple[list, set] | tuple[None, None]:
-        """Find the extra qubits in the weight-6 parent stabilizer.
-
-        Given a weight-4 stabilizer, finds the weight-6 stabilizer that contains
-        it as a subset, and returns the 2 extra qubit labels and positions.
-
-        Returns:
-            (extra_qubit_labels, extra_qubits) if a weight-6 parent is found,
-            (None, None) otherwise.
-        """
-        stab_set = set(stab)
-        weight6_parent = None
-        for candidate in self.mapping_ancillas:
-            if len(candidate) == 6 and stab_set.issubset(set(candidate)):
-                weight6_parent = candidate
-                break
-        if weight6_parent is None:
-            return None, None
-        extra_qubits = set(weight6_parent) - stab_set
-        extra_qubit_labels = [self.mapping[q] for q in extra_qubits]
-        return extra_qubit_labels, extra_qubits
-
-    def find_weight2_subset_same_layer(
-        self,
-        stab_w6: tuple,
-        mapping_ancillas_filtered: dict,
-    ):
-        """
-        Given a weight-6 stabilizer, find a weight-2 stabilizer that is a subset
-        of it and present in the SAME layer mapping.
-
-        Returns:
-            (weight2_stab, ancilla_label) or (None, None)
-        """
-        if len(stab_w6) != 6:
-            return None, None
-
-        stab6_set = set(stab_w6)
-
-        for stab, anc in mapping_ancillas_filtered.items():
-            if len(stab) == 2 and set(stab).issubset(stab6_set):
-                return stab, anc
-
-        return None, None
-
-    #---------------new stuff for the quadratic mapping etc + superdense----------------------
-    @staticmethod
-    def is_stab_new(stab, seen):
-        """Return True if stab is genuinely new, i.e. not already represented in seen.
-
-        A stab is considered already seen if:
-        - it is directly in seen, OR
-        - it is a weight-4 stab and a weight-6 stab in seen contains it (overlap == 4), OR
-        - it is a weight-6 stab and a weight-4 stab in seen is contained in it (overlap == 4)
-        """
-        if stab in seen:
-            return False
-        stab_set = set(stab)
-        for seen_stab in seen:
-            if len(stab_set & set(seen_stab)) == 4:
-                return False
-        return True
 
     @staticmethod
     def assign_stabilizer_info(stab) -> StabilizerInfo:
@@ -633,57 +299,82 @@ class SyndromeExtractionStimCC:
         This covers info about different weight-4 stabilizers and weight-6 stabilizers
         weight-2 stabilizers should not be covered by this.
         """
-        #make sure that z=0
+        # make sure that z=0
         stab = [Position3DHex(pos.x, pos.y, 0) for pos in stab]
         stab_rec = [pos.rectangular_map() for pos in stab]
-        y_values = sorted({pos[1] for pos in stab_rec}) #available rec y values
-        position_entries = [PositionEntry(hex = pos_hex, rect = pos_rec, label = None) for pos_hex, pos_rec in zip(stab, stab_rec)]
-        if len(stab)==2: #minimal assignment for weight-2 stabilizers
+        y_values = sorted({pos[1] for pos in stab_rec})  # available rec y values
+        position_entries = [
+            PositionEntry(hex=pos_hex, rect=pos_rec, label=None)
+            for pos_hex, pos_rec in zip(stab, stab_rec)
+        ]
+        if len(stab) == 2:  # minimal assignment for weight-2 stabilizers
             return StabilizerInfo(
-                data_qubits = position_entries,
-                top = None,
-                bottom = None,
-                sides = None,
-                ancilla = None,
-                stab_type = None
-                )
+                data_qubits=position_entries,
+                top=None,
+                bottom=None,
+                sides=None,
+                ancilla=None,
+                stab_type=None,
+            )
         if len(y_values) == 3:
-            #standard simple case
-            top = sorted([pe for pe in position_entries if pe.rect[1] == y_values[2]], key=lambda pe: pe.rect[0])
-            side = sorted([pe for pe in position_entries if pe.rect[1] == y_values[1]], key=lambda pe: pe.rect[0])
-            bottom = sorted([pe for pe in position_entries if pe.rect[1] == y_values[0]], key=lambda pe: pe.rect[0])
-            #assign ancillas
+            # standard simple case
+            top = sorted(
+                [pe for pe in position_entries if pe.rect[1] == y_values[2]],
+                key=lambda pe: pe.rect[0],
+            )
+            side = sorted(
+                [pe for pe in position_entries if pe.rect[1] == y_values[1]],
+                key=lambda pe: pe.rect[0],
+            )
+            bottom = sorted(
+                [pe for pe in position_entries if pe.rect[1] == y_values[0]],
+                key=lambda pe: pe.rect[0],
+            )
+            # assign ancillas
             if len(side) == 2:
                 a = side[0].rect[0]
                 b = side[-1].rect[0]
-                ends = sorted([a,b])
+                ends = sorted([a, b])
                 x_values = list(range(ends[0] + 1, ends[1]))
-                y_rec = side[0].rect[1] #y is fix
+                y_rec = side[0].rect[1]  # y is fix
                 ancillas_rec = [(x, y_rec) for x in x_values]
-                #ancillas = [PositionEntry(hex = None, rect = tuple(sorted(rec)), label = None) for rec in ancillas_rec]
-                ancillas = [PositionEntry(hex=None, rect=rec, label=None) for rec in sorted(ancillas_rec)]
+                ancillas = [
+                    PositionEntry(hex=None, rect=rec, label=None) for rec in sorted(ancillas_rec)
+                ]
             elif len(side) == 1:
-                #this is a sideways weight-4 stabilizer which is a bit deformed
-                #there are 4 different shapes of that kind and they are covered by the following
+                # this is a sideways weight-4 stabilizer which is a bit deformed
+                # there are 4 different shapes of that kind and they are covered by the following
                 if len(bottom) == 2:
                     y_rec = side[0].rect[1]
                     x_values = [pe.rect[0] for pe in bottom]
                     ancillas_rec = [(x, y_rec) for x in x_values]
-                    ancillas = [PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec]
+                    ancillas = [
+                        PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec
+                    ]
                 elif len(top) == 2:
                     y_rec = side[0].rect[1]
                     x_values = [pe.rect[0] for pe in top]
                     ancillas_rec = [(x, y_rec) for x in x_values]
-                    ancillas = [PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec]
-                #this can also be a weight-3 stabilizer
-                elif len(bottom) == 1 and len(top) ==1:
+                    ancillas = [
+                        PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec
+                    ]
+                # this can also be a weight-3 stabilizer
+                elif len(bottom) == 1 and len(top) == 1:
                     y_rec = side[0].rect[1]
-                    x_values = [bottom[0].rect[0], bottom[0].rect[0]+1]
+                    x_values = [bottom[0].rect[0], bottom[0].rect[0] + 1]
                     ancillas_rec = [(x, y_rec) for x in x_values]
-                    ancillas = [PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec]
+                    ancillas = [
+                        PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec
+                    ]
         elif len(y_values) == 2:
-            row_a = sorted([pe for pe in position_entries if pe.rect[1] == y_values[1]], key=lambda pe: pe.rect[0])
-            row_b = sorted([pe for pe in position_entries if pe.rect[1] == y_values[0]], key=lambda pe: pe.rect[0])
+            row_a = sorted(
+                [pe for pe in position_entries if pe.rect[1] == y_values[1]],
+                key=lambda pe: pe.rect[0],
+            )
+            row_b = sorted(
+                [pe for pe in position_entries if pe.rect[1] == y_values[0]],
+                key=lambda pe: pe.rect[0],
+            )
             # determine which row is the side by checking y-distance
             if y_values[1] - y_values[0] > 1:
                 # gap between rows -> neither is adjacent, shouldn't happen
@@ -701,13 +392,15 @@ class SyndromeExtractionStimCC:
                     top = row_a
                     bottom = []
                 # ancillas same as above
-                if len(side) == 2: #weight-4 stabilizers
-                    #weight-4 stabilizers
+                if len(side) == 2:  # weight-4 stabilizers
+                    # weight-4 stabilizers
                     ends = sorted([side[0].rect[0], side[-1].rect[0]])
                     x_values = list(range(ends[0] + 1, ends[1]))
                     y_rec = side[0].rect[1]
                     ancillas_rec = [(x, y_rec) for x in x_values]
-                    ancillas = [PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec]
+                    ancillas = [
+                        PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec
+                    ]
             if len(stab) == 3:
                 if len(row_a) == 2 and len(row_b) == 1:
                     side = row_b
@@ -719,7 +412,7 @@ class SyndromeExtractionStimCC:
                 x_values = [el.rect[0] for el in top_bottom]
                 ancillas_rec = [(x, y_rec) for x in x_values]
                 ancillas = [PositionEntry(hex=None, rect=rec, label=None) for rec in ancillas_rec]
-                #determine top/bottom based on which y values are larger
+                # determine top/bottom based on which y values are larger
                 if top_bottom[0].rect[1] > y_rec:
                     top = top_bottom
                     bottom = []
@@ -730,12 +423,12 @@ class SyndromeExtractionStimCC:
             raise ValueError("wrong")
 
         return StabilizerInfo(
-            data_qubits = position_entries,
-            top = top,
-            sides = side,
-            bottom = bottom,
-            ancilla = ancillas,
-            stab_type = None
+            data_qubits=position_entries,
+            top=top,
+            sides=side,
+            bottom=bottom,
+            ancilla=ancillas,
+            stab_type=None,
         )
 
     def hex_mapping_to_quadratic(self):
@@ -744,7 +437,8 @@ class SyndromeExtractionStimCC:
         This creates a mapping for both the data and ancilla qubits
         based on Position3DHex.rectangular_map() for the data qubits.
         """
-        #first find stabilizerinfo for each stabilizer (no label assignment yet, no prism/pipe assignment yet)
+        # first find stabilizerinfo for each stabilizer
+        # (no label assignment yet, no prism/pipe assignment yet)
         stabilizers_per_layer = {}
         for z in self.z_values:
             stabilizers = self.dct_stabilizers_all[z]
@@ -757,46 +451,35 @@ class SyndromeExtractionStimCC:
 
         mapping_full: dict[int, dict[Prism | PrismPipe, PrismData]] = {}
 
-        #find integer values for data qubits
+        # find integer values for data qubits
         data_idx = 0
         seen: dict[Position3DHex, PositionEntry] = {}
         for z in self.z_values:
-            dct_temp : dict[Prism | PrismPipe, PrismData] = {}
+            dct_temp: dict[Prism | PrismPipe, PrismData] = {}
 
             prism_pipes_data = self.prism_graph.prism_pipes_to_data_qubits_full[z]
             # first pass: prisms only
             for pipe_prism, data_qubits in prism_pipes_data.items():
-                #if not isinstance(pipe_prism, Prism):
+                # if not isinstance(pipe_prism, Prism):
                 #    continue
                 positions = []
                 for pos in data_qubits:
                     flat = Position3DHex(x=pos.x, y=pos.y, z=0)
                     if flat not in seen:
-                        position_entry = PositionEntry(hex = flat, rect = flat.rectangular_map(), label = data_idx)
+                        position_entry = PositionEntry(
+                            hex=flat, rect=flat.rectangular_map(), label=data_idx
+                        )
                         positions.append(position_entry)
                         data_idx += 1
                         seen[flat] = position_entry
                     else:
                         positions.append(seen[flat])
-                dct_temp.update({pipe_prism : PrismData(positions = positions.copy(), stabilizers = None)})
-            # second pass: pipes only
-            #for pipe_prism, data_qubits in prism_pipes_data.items():
-            #    if not isinstance(pipe_prism, PrismPipe):
-            #        continue
-            #    positions = []
-            #    for pos in data_qubits:
-            #        flat = Position3DHex(x=pos.x, y=pos.y, z=0)
-            #        if flat not in seen:
-            #            position_entry = PositionEntry(hex = flat, rect = flat.rectangular_map(), label = data_idx)
-            #            positions.append(position_entry)
-            #            data_idx += 1
-            #            seen[flat] = position_entry
-            #        else:
-            #            positions.append(seen[flat])
-            #    dct_temp.update({pipe_prism : PrismData(positions = positions.copy(), stabilizers = None)})
+                dct_temp.update(
+                    {pipe_prism: PrismData(positions=positions.copy(), stabilizers=None)}
+                )
             mapping_full.update({z: dct_temp})
 
-        #adapt data_qubit labels in stab_info according to above labels
+        # adapt data_qubit labels in stab_info according to above labels
         rect_to_entry: dict[tuple, PositionEntry] = {pe.rect: pe for pe in seen.values()}
         seen_ancillas: dict[tuple, PositionEntry] = {}
         for z in self.z_values:
@@ -885,6 +568,7 @@ class SyndromeExtractionStimCC:
         Returns:
             True if the data qubit support changed (or no matching previous
             stabilizer was found), False if the support is identical.
+
         """
         if z not in self.mapping_full or z - 1 not in self.mapping_full:
             raise ValueError("do not use this if this is the very first z layer.")
@@ -920,20 +604,27 @@ class SyndromeExtractionStimCC:
                 ),
                 kind=prism_pipe.kind,
             )
-        #find the matching key as you cannot just take the current prism_pipe and adjust pos. this is not enough
+        # find the matching key as you cannot just take the current prism_pipe
+        # and adjust pos. this is not enough
         if isinstance(prism_pipe, Prism):
             matching_key = next(
-                (k for k in prism_pipes_stabs_previous
-                if isinstance(k, Prism) and k.position == prism_pipe_previous.position),
-                None
+                (
+                    k
+                    for k in prism_pipes_stabs_previous
+                    if isinstance(k, Prism) and k.position == prism_pipe_previous.position
+                ),
+                None,
             )
         elif isinstance(prism_pipe, PrismPipe):
             matching_key = next(
-                (k for k in prism_pipes_stabs_previous
-                if isinstance(k, PrismPipe)
-                and k.u.position == prism_pipe_previous.u.position
-                and k.v.position == prism_pipe_previous.v.position),
-                None
+                (
+                    k
+                    for k in prism_pipes_stabs_previous
+                    if isinstance(k, PrismPipe)
+                    and k.u.position == prism_pipe_previous.u.position
+                    and k.v.position == prism_pipe_previous.v.position
+                ),
+                None,
             )
         stabs_previous = prism_pipes_stabs_previous[matching_key].stabilizers
         if not stabs_previous:
@@ -942,18 +633,16 @@ class SyndromeExtractionStimCC:
         # represent ancillas of current stab as a set of rect tuples for comparison
         if not stab.ancilla:
             raise ValueError("a stabilizer does not have ancillas.")
-        current_ancilla_rects = {anc.rect for anc in stab.ancilla}
-        print("current ancilla rects", current_ancilla_rects)
+        current_ancilla_rects = {ancilla.rect for ancilla in stab.ancilla}
 
         # find the previous stabilizer that shares the same ancilla rect positions
         matching_prev_stab = None
         for prev_stab in stabs_previous:
             if not prev_stab.ancilla:
                 continue
-            prev_ancilla_rects = {anc.rect for anc in prev_stab.ancilla}
+            prev_ancilla_rects = {ancilla.rect for ancilla in prev_stab.ancilla}
             if prev_ancilla_rects == current_ancilla_rects:
                 matching_prev_stab = prev_stab
-                print("match")
                 break
 
         if matching_prev_stab is None:
@@ -962,8 +651,6 @@ class SyndromeExtractionStimCC:
         # compare data qubit support via rect tuples
         current_data_rects = {pe.rect for pe in stab.data_qubits}
         prev_data_rects = {pe.rect for pe in matching_prev_stab.data_qubits}
-        print("current data rects", current_data_rects)
-        print("prev data rects", prev_data_rects)
 
         return current_data_rects != prev_data_rects
 
@@ -980,27 +667,32 @@ class SyndromeExtractionStimCC:
             and a.v.position.y == b.v.position.y
         )
 
-    def identify_correlation_surface_measurements(self, horizontal_pipes_cs, meas_rec_lst, num_meas):
+    def identify_correlation_surface_measurements(
+        self, horizontal_pipes_cs, meas_rec_lst, num_meas
+    ):
         """Identify measurements that belong to a correlation surface."""
-        #vertical correlation surface
-        meas_rec_vertical = {} #measurement labels
-        #horizontal correlation surface
-        meas_rec_horizontal = {} #measurement labels
+        # vertical correlation surface
+        meas_rec_vertical = {}  # measurement labels
+        # horizontal correlation surface
+        meas_rec_horizontal = {}  # measurement labels
 
         for prism_pipe, (cs_type, cs_alignment) in horizontal_pipes_cs.items():
             u = prism_pipe.u
             v = prism_pipe.v
             if u.position.z != v.position.z:
-                raise ValueError("Some error within pipe construction. Present horizontal pipe's u and v have different z values.")
+                raise ValueError(
+                    "Some error within pipe construction."
+                    " Present horizontal pipe's u and v have different z values."
+                )
             z_value = u.position.z
             if cs_alignment == "ver":
-                #important: identify prisms that are neighbors of the given pipe.
-                #because only the star operator on the neighboring prism is taken into account
-                #measurement of data qubits in the interface are not taken into account.
-                #the pipe itself does not host measurement outcomes of ver cs relevant for the OBS
+                # important: identify prisms that are neighbors of the given pipe.
+                # because only the star operator on the neighboring prism is taken into account
+                # measurement of data qubits in the interface are not taken into account.
+                # the pipe itself does not host measurement outcomes of ver cs relevant for the OBS
 
-                #search for data qubit measurements of either u or v prism
-                #in meas rec lst, these data measurements are not containing a stabilizer
+                # search for data qubit measurements of either u or v prism
+                # in meas rec lst, these data measurements are not containing a stabilizer
                 star_ops_x, star_ops_z = self.result_dct[z_value]["star"]
                 if cs_type == BasisPrism.Z:
                     star_ops_current = star_ops_z
@@ -1010,9 +702,11 @@ class SyndromeExtractionStimCC:
                     meas_type = "MX"
                 else:
                     raise ValueError("Error during construction of correlation srufaces.")
-                if len(star_ops_current)==0:
-                    raise ValueError("Mismatch between existing star operators and requested vertical CS.")
-                #find data qubit measurements on u and/or v in meas_rec_lst
+                if len(star_ops_current) == 0:
+                    raise ValueError(
+                        "Mismatch between existing star operators and requested vertical CS."
+                    )
+                # find data qubit measurements on u and/or v in meas_rec_lst
                 meas_label_abs_temp = []
                 for meas_rec_info in meas_rec_lst:
                     if (
@@ -1020,7 +714,7 @@ class SyndromeExtractionStimCC:
                         and meas_rec_info.stabilizer is None
                         and meas_rec_info.meas_type == meas_type
                     ):
-                        meas_label_abs_temp.append((meas_rec_info.abs_rec, meas_rec_info.label))
+                        meas_label_abs_temp.append((meas_rec_info.abs_rec, meas_rec_info.label))  # noqa: PERF401
                 star_ops_labels = []
                 for star_op in star_ops_current:
                     star_op_flat = [Position3DHex(p.x, p.y, 0) for p in star_op]
@@ -1029,25 +723,22 @@ class SyndromeExtractionStimCC:
                     for prism_data in self.mapping_full[z_value].values():
                         for pe in prism_data.positions:
                             if pe.hex in star_op_flat_set:
-                                labels.append(pe.label)
+                                labels.append(pe.label)  # noqa: PERF401
                     star_ops_labels.append(labels)
-                #find intersection between star op and data qubit meas
-                #compare tuple[1] with the star_ops_labels
+                # find intersection between star op and data qubit meas
+                # compare tuple[1] with the star_ops_labels
                 tmp = []
                 for star_op_label in star_ops_labels:
                     for label in star_op_label:
                         for abs_rec, qubit_label in meas_label_abs_temp:
                             if qubit_label == label:
-                                print("abs rec", abs_rec)
-                                rec = abs_rec - num_meas -1
+                                rec = abs_rec - num_meas - 1
                                 tmp.append(stim.target_rec(rec))
                 meas_rec_vertical.update({(cs_type, prism_pipe): tmp})
             elif cs_alignment == "hor":
                 result = self.result_dct[z_value]["product"]
                 stabilizer_products_x = result.stabilizer_products_x
                 stabilizer_products_z = result.stabilizer_products_z
-                print("len stab prod x, z", len(stabilizer_products_x), len(stabilizer_products_z))
-                print("horizontal corrleaiton surface")
                 if cs_type == BasisPrism.Z:
                     stabilizer_product_current = stabilizer_products_z
                     meas_type = "MZ"
@@ -1055,10 +746,8 @@ class SyndromeExtractionStimCC:
                     stabilizer_product_current = stabilizer_products_x
                     meas_type = "MX"
                 else:
-                    raise ValueError("incorrect cs type assignemnt.")
-                print("CS TYPE", cs_type)
+                    raise ValueError("incorrect cs type assignment.")
                 tmp = []
-                print("len stabilizers_product_currrent", stabilizer_product_current)
                 for cs in stabilizer_product_current:
                     # check if any stabilizer in this cs overlaps with data qubits of u or v
                     uv_labels = set()
@@ -1081,28 +770,31 @@ class SyndromeExtractionStimCC:
                     if not uv_labels & cs_labels:
                         continue  # this cs doesn't belong to the current pipe
                     for stabilizer in cs:
-                        print("stabilizer", stabilizer)
                         # normalize to z=0 and use a set for order-independent comparison
-                        #stabilizer_flat = {Position3DHex(p.x, p.y, 0) for p in stabilizer}
+                        # stabilizer_flat = {Position3DHex(p.x, p.y, 0) for p in stabilizer}
                         stabilizer_flat = {Position3DHex(p.x, p.y, 0) for p in stabilizer}
                         z_value = stabilizer[0].z
                         match = next(
-                            (m for m in meas_rec_lst
-                            if m.meas_type == meas_type
-                            and m.stabilizer is not None
-                            and m.z_value == z_value
-                            and {Position3DHex(pe.hex.x, pe.hex.y, 0) for pe in m.stabilizer.data_qubits if pe.hex is not None} == stabilizer_flat),
-                            None
+                            (
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == meas_type
+                                and m.stabilizer is not None
+                                and m.z_value == z_value
+                                and {
+                                    Position3DHex(pe.hex.x, pe.hex.y, 0)
+                                    for pe in m.stabilizer.data_qubits
+                                    if pe.hex is not None
+                                }
+                                == stabilizer_flat
+                            ),
+                            None,
                         )
-                        print("stabilizer new:", match.stabilizer.data_qubits)
                         if match is not None:
-                            print("abs_rec", match.abs_rec-1)
-                            print("match", match)
                             rec = match.abs_rec - num_meas - 1
                             tmp.append(stim.target_rec(rec))
 
                     meas_rec_horizontal.update({(cs_type, prism_pipe): tmp})
-                print("tmp", tmp)
             else:
                 raise ValueError("The alignment of CS must be ver or hor.")
         return meas_rec_vertical, meas_rec_horizontal
@@ -1111,39 +803,32 @@ class SyndromeExtractionStimCC:
     def data_meas_rec_lst_pipe_prism(meas_rec_lst, z, rounds):
         """Collect the pipes of z-1 where data qubit measurements were performed."""
         meas_rec_lst_data = [
-            m for m in meas_rec_lst
-            if m.z_value == z-1 and m.stabilizer is None and m.round == rounds-1
-            ]
+            m
+            for m in meas_rec_lst
+            if m.z_value == z - 1 and m.stabilizer is None and m.round == rounds - 1
+        ]
         return meas_rec_lst_data
 
     def add_triple_detector_changed_shape_split_opposite(
-        self,
-        stab,
-        meas_rec_lst,
-        circuit,
-        z,
-        r,
-        rounds,
-        meas_rec_lst_data
-        ):
+        self, stab, meas_rec_lst, circuit, z, r, rounds, meas_rec_lst_data
+    ):
         """Add `triple` detector after split with the opposite basis as the data qubit meas.
 
         weight-4 stabilizer of current z layer, with previous weight-2 and weight-6.
         """
-        print("=========triple detector opposite==========")
-        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z-1]
-        prism_pipes_stabs_previous = self.mapping_full[z-1]
+        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z - 1]
+        prism_pipes_stabs_previous = self.mapping_full[z - 1]
 
         rec_lst = []
-        #determine which elements of data_meas_pipe_prism are neighbors of current stab
-        #for this we first need to find the previous weight-6 labels
+        # determine which elements of data_meas_pipe_prism are neighbors of current stab
+        # for this we first need to find the previous weight-6 labels
         flag = False
-        labels_weight6=None
+        labels_weight6 = None
         stab_set_label = {el.label for el in stab.data_qubits}
         if len(stab_set_label) == 3 or len(stab_set_label) == 5:
-            return #no search if we have weight-3 because those are single type stabilizers
-        #but also single type weight-6 operators have to be excluded! this problem occurs only
-        #for "horizontal" STDWs if you plot the stabilizers per layer
+            return  # no search if we have weight-3 because those are single type stabilizers
+        # but also single type weight-6 operators have to be excluded! this problem occurs only
+        # for "horizontal" STDWs if you plot the stabilizers per layer
         if stab.stab_type in {"X", "Z"}:
             return
         for prism_pipe in prism_pipes_zpm_previous.keys():
@@ -1157,83 +842,90 @@ class SyndromeExtractionStimCC:
             if flag:
                 break
         neighbor_meas = [m for m in meas_rec_lst_data if m.label in labels_weight6]
-        if len(neighbor_meas)==0:
+        if len(neighbor_meas) == 0:
             return
 
-        #what is the meas_type of these? take first element and take opposite
+        # what is the meas_type of these? take first element and take opposite
         meas_types = [m.meas_type for m in neighbor_meas]
         if not all([meas_types[0] == meas_type for meas_type in meas_types]):
-            raise ValueError("There are mixed measurement types on neighboring data qubits of previous z layer.")
+            raise ValueError(
+                "There are mixed measurement types on neighboring data qubits of previous z layer."
+            )
         if meas_types[0] == "MX":
             meas_type = "MZ"
         elif meas_types[0] == "MZ":
             meas_type = "MX"
 
-        #add rec for current stab:
-        rec = next(
-            m for m in meas_rec_lst
-            if m.meas_type == meas_type
-            and m.z_value == z
-            and m.stabilizer == stab
-            and m.round == r
-        ).abs_rec - 1 - circuit.num_measurements
+        # add rec for current stab:
+        rec = (
+            next(
+                m
+                for m in meas_rec_lst
+                if m.meas_type == meas_type
+                and m.z_value == z
+                and m.stabilizer == stab
+                and m.round == r
+            ).abs_rec
+            - 1
+            - circuit.num_measurements
+        )
         rec_lst.append(rec)
-        print("rec_lst", rec_lst)
 
-        #add the previous weight-6 stabilizer
+        # add the previous weight-6 stabilizer
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
             for stab_temp in stabs:
                 stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
                 if len(stab_temp_labels & stab_set_label) == 4:
-                    rec = next(
-                        m for m in meas_rec_lst
-                        if m.meas_type == meas_type
-                        and m.z_value == z-1
-                        and m.stabilizer == stab_temp
-                        and m.round == rounds-1
-                    ).abs_rec - 1 - circuit.num_measurements
+                    rec = (
+                        next(
+                            m
+                            for m in meas_rec_lst
+                            if m.meas_type == meas_type
+                            and m.z_value == z - 1
+                            and m.stabilizer == stab_temp
+                            and m.round == rounds - 1
+                        ).abs_rec
+                        - 1
+                        - circuit.num_measurements
+                    )
                     rec_lst.append(rec)
                     flag = True
                     break
             if flag:
                 break
-        print("rec_lst", rec_lst)
 
-        #add the weight-2 stabilizer
+        # add the weight-2 stabilizer
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
             for stab_temp in stabs:
                 stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
-                if len(stab_temp_labels & labels_weight6) == 2 and len(stab_temp_labels)==2:
-                    rec = next(
-                        m for m in meas_rec_lst
-                        if m.meas_type == meas_type
-                        and m.z_value == z-1
-                        and m.stabilizer == stab_temp
-                        and m.round == rounds-1
-                    ).abs_rec - 1 - circuit.num_measurements
+                if len(stab_temp_labels & labels_weight6) == 2 and len(stab_temp_labels) == 2:
+                    rec = (
+                        next(
+                            m
+                            for m in meas_rec_lst
+                            if m.meas_type == meas_type
+                            and m.z_value == z - 1
+                            and m.stabilizer == stab_temp
+                            and m.round == rounds - 1
+                        ).abs_rec
+                        - 1
+                        - circuit.num_measurements
+                    )
                     rec_lst.append(rec)
                     flag = True
                     break
             if flag:
                 break
-        print("rec_lst", rec_lst, [circuit.num_measurements+i for i in rec_lst])
 
         circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst])
 
     def add_triple_detector_changed_shape_split_same(
-        self,
-        stab,
-        meas_rec_lst,
-        circuit,
-        z,
-        r,
-        rounds,
-        meas_rec_lst_data
-        ):
+        self, stab, meas_rec_lst, circuit, z, r, rounds, meas_rec_lst_data
+    ):
         """Add `triple` detector after split with the same basis as the data qubit meas.
 
         Strictly speaking, this is not a `triple` detector because the data qubit measurements are
@@ -1241,21 +933,19 @@ class SyndromeExtractionStimCC:
         four: 1 current weight-4 stabilizer, 1 previous weight-6 stabilizer,
         2 data qubit meas previous.
         """
-        print("==add triple detector changed shape split same==")
-        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z-1]
-        prism_pipes_stabs_previous = self.mapping_full[z-1]
+        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z - 1]
+        prism_pipes_stabs_previous = self.mapping_full[z - 1]
 
         rec_lst = []
-        #determine which elements of data_meas_pipe_prism are neighbors of current stab
-        #for this we first need to find the previous weight-6 labels
+        # determine which elements of data_meas_pipe_prism are neighbors of current stab
+        # for this we first need to find the previous weight-6 labels
         flag = False
-        labels_weight6=None
+        labels_weight6 = None
         stab_set_label = {el.label for el in stab.data_qubits}
-        print("stab set label", stab_set_label)
         if len(stab_set_label) == 3 or len(stab_set_label) == 5:
-            return #no search if we have weight-3 because those are single type stabilizers
-        #but also single type weight-6 operators have to be excluded! this problem occurs only
-        #for "horizontal" STDWs if you plot the stabilizers per layer
+            return  # no search if we have weight-3 because those are single type stabilizers
+        # but also single type weight-6 operators have to be excluded! this problem occurs only
+        # for "horizontal" STDWs if you plot the stabilizers per layer
         if stab.stab_type in {"X", "Z"}:
             return
         for prism_pipe in prism_pipes_zpm_previous.keys():
@@ -1269,51 +959,62 @@ class SyndromeExtractionStimCC:
             if flag:
                 break
         neighbor_meas = [m for m in meas_rec_lst_data if m.label in labels_weight6]
-        if len(neighbor_meas)==0:
+        if len(neighbor_meas) == 0:
             return
 
-        #what is the meas_type of these? take first element
+        # what is the meas_type of these? take first element
         meas_types = [m.meas_type for m in neighbor_meas]
         if not all([meas_types[0] == meas_type for meas_type in meas_types]):
-            raise ValueError("There are mixed measurement types on neighboring data qubits of previous z layer.")
+            raise ValueError(
+                "There are mixed measurement types on neighboring data qubits of previous z layer."
+            )
         meas_type = meas_types[0]
 
-        #add rec for current stab:
-        rec = next(
-            m for m in meas_rec_lst
-            if m.meas_type == meas_type
-            and m.z_value == z
-            and m.stabilizer == stab
-            and m.round == r
-        ).abs_rec - 1 - circuit.num_measurements
+        # add rec for current stab:
+        rec = (
+            next(
+                m
+                for m in meas_rec_lst
+                if m.meas_type == meas_type
+                and m.z_value == z
+                and m.stabilizer == stab
+                and m.round == r
+            ).abs_rec
+            - 1
+            - circuit.num_measurements
+        )
         rec_lst.append(rec)
 
-        #add the previous weight-6 stabilizer
+        # add the previous weight-6 stabilizer
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
             for stab_temp in stabs:
                 stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
                 if len(stab_temp_labels & stab_set_label) == 4:
-                    rec = next(
-                        m for m in meas_rec_lst
-                        if m.meas_type == meas_type
-                        and m.z_value == z-1
-                        and m.stabilizer == stab_temp
-                        and m.round == rounds-1
-                    ).abs_rec - 1 - circuit.num_measurements
+                    rec = (
+                        next(
+                            m
+                            for m in meas_rec_lst
+                            if m.meas_type == meas_type
+                            and m.z_value == z - 1
+                            and m.stabilizer == stab_temp
+                            and m.round == rounds - 1
+                        ).abs_rec
+                        - 1
+                        - circuit.num_measurements
+                    )
                     rec_lst.append(rec)
                     flag = True
                     break
             if flag:
                 break
 
-        #add the two data qubit measurements.
+        # add the two data qubit measurements.
         for neighbor in neighbor_meas:
             rec = neighbor.abs_rec - 1 - circuit.num_measurements
             rec_lst.append(rec)
 
-        print("rec lst  triple detector split same", rec_lst, [circuit.num_measurements+i for i in rec_lst])
         circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst])
 
     def add_double_detector_changed_shape_merge_same(
@@ -1324,25 +1025,25 @@ class SyndromeExtractionStimCC:
         z,
         r,
         rounds,
-        ):
+    ):
         """Add a double detector in the initialization basis.
 
         This compares the current weight-6 stabilizer with the previous weight.4 stabilizer
         it compares the stabilizers of the basis in which zpm.p is done.
         these are naturally okay thus only two stabilizers needed
         """
-        print("---------double detector same---------")
         stab_labels = {pe.label for pe in stab.data_qubits}
-        #find the weight-4 stabilizer of the previous layer
-        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z-1]
-        prism_pipes_stabs_previous = self.mapping_full[z-1]
+        # find the weight-4 stabilizer of the previous layer
+        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z - 1]
+        prism_pipes_stabs_previous = self.mapping_full[z - 1]
         stab_weight4 = None
-        flag=False
+        flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
             for stab_temp in stabs:
                 stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
-                if len(stab_temp_labels & stab_labels)==4 and len(stab_temp_labels)==4: #overlap 4 guarantees correct stab
+                # overlap 4 guarantees correct stab
+                if len(stab_temp_labels & stab_labels) == 4 and len(stab_temp_labels) == 4:
                     stab_weight4 = stab_temp
                     flag = True
                     break
@@ -1351,9 +1052,9 @@ class SyndromeExtractionStimCC:
         if stab_weight4 is None:
             return
 
-        #find meas type based on initialization of adjacent pipe.
-        #both stabilizers here are strictly speaking part of the prism, not the pipe
-        #thus no knowledge about pipe initialization
+        # find meas type based on initialization of adjacent pipe.
+        # both stabilizers here are strictly speaking part of the prism, not the pipe
+        # thus no knowledge about pipe initialization
         prism_pipes_zpm_temp = self.prism_pipes_to_ZPM[z]
         prism_pipes_stabs = self.mapping_full[z]
         flag = False
@@ -1362,10 +1063,10 @@ class SyndromeExtractionStimCC:
             for stab_temp in stabs:
                 stab_temp_labels = {pe.label for pe in stab_temp.data_qubits}
                 zpm = prism_pipes_zpm_temp[prism_pipe]
-                #take the weight-2 stabilizer that has overlap with current weight-6
-                #this is guaranteed in the adjacent pipe.
-                if len(stab_labels & stab_temp_labels)==2 and len(stab_temp_labels)==2:
-                    #this is the zpm we want
+                # take the weight-2 stabilizer that has overlap with current weight-6
+                # this is guaranteed in the adjacent pipe.
+                if len(stab_labels & stab_temp_labels) == 2 and len(stab_temp_labels) == 2:
+                    # this is the zpm we want
                     if zpm.p == BasisPrism.X:
                         meas_type = "MX"
                     elif zpm.p == BasisPrism.Z:
@@ -1375,34 +1076,39 @@ class SyndromeExtractionStimCC:
             if flag:
                 break
 
-        print("stab weight 4", [el.label for el in stab_weight4.data_qubits])
-        print("meas type", meas_type)
         rec_lst = []
 
-        #find the correct entry for previous weight-4 stabilizer
-        rec = next(
-            m for m in meas_rec_lst
-            if m.meas_type == meas_type
-            and m.z_value == z-1
-            and m.stabilizer == stab_weight4
-            and m.round == rounds-1
-        ).abs_rec - 1 - circuit.num_measurements
+        # find the correct entry for previous weight-4 stabilizer
+        rec = (
+            next(
+                m
+                for m in meas_rec_lst
+                if m.meas_type == meas_type
+                and m.z_value == z - 1
+                and m.stabilizer == stab_weight4
+                and m.round == rounds - 1
+            ).abs_rec
+            - 1
+            - circuit.num_measurements
+        )
         rec_lst.append(rec)
-        print("rec_lst", rec_lst)
 
-        #find the correct entry for current weight-6 stabilizer
-        rec = next(
-            m for m in meas_rec_lst
-            if m.meas_type == meas_type
-            and m.z_value == z
-            and m.stabilizer == stab
-            and m.round == r
-        ).abs_rec - 1 - circuit.num_measurements
+        # find the correct entry for current weight-6 stabilizer
+        rec = (
+            next(
+                m
+                for m in meas_rec_lst
+                if m.meas_type == meas_type
+                and m.z_value == z
+                and m.stabilizer == stab
+                and m.round == r
+            ).abs_rec
+            - 1
+            - circuit.num_measurements
+        )
         rec_lst.append(rec)
-        print("rec_lst", rec_lst)
 
-        circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst]) #inplace replace
-
+        circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst])  # inplace replace
 
     def add_triple_detector_changed_shape_merge_opposite(
         self,
@@ -1411,19 +1117,17 @@ class SyndromeExtractionStimCC:
         circuit: stim.Circuit,
         z: int,
         r: int,
-        rounds: int
-        ):
+        rounds: int,
+    ):
         """Add a triple detector at the r=0 during a merge.
 
         this means that we add a detector that compares weight-4 of previous z layer,
         weight-6 and weight-2 of the current layer. the weight-4 and weight-2 are subsets
         of the weight-6 stabilizer
         """
-        print("---------triple detector changed shape merge opposite----------")
-        #usually, weight-4 stabilizer is given as input
-        #find weight-6 stabilizer and weight-2 stabilizer
+        # usually, weight-4 stabilizer is given as input
+        # find weight-6 stabilizer and weight-2 stabilizer
         stab_labels = {pe.label for pe in stab_weight6.data_qubits}
-        print("stab_labels", stab_labels)
 
         if len(stab_labels) != 6:
             return
@@ -1432,9 +1136,9 @@ class SyndromeExtractionStimCC:
         stab_weight2 = None
         meas_type = None
 
-        #search for weight-2 stabilizer (requires already found weight-6)
-        #determine the meas_type we are looking for. the weight-2 stab is in the pipe,
-        # not in the prism, so this must be initailized
+        # search for weight-2 stabilizer (requires already found weight-6)
+        # determine the meas_type we are looking for. the weight-2 stab is in the pipe,
+        # not in the prism, so this must be initialized
         flag = False
         prism_pipes_zpm_temp = self.prism_pipes_to_ZPM[z]
         prism_pipes_stabs = self.mapping_full[z]
@@ -1443,9 +1147,9 @@ class SyndromeExtractionStimCC:
             zpm = prism_pipes_zpm_temp[prism_pipe]
             for stab in stabs:
                 stab_temp_labels = {pe.label for pe in stab.data_qubits}
-                if stab_temp_labels & stab_labels and len(stab.data_qubits)==2:
+                if stab_temp_labels & stab_labels and len(stab.data_qubits) == 2:
                     stab_weight2 = stab
-                    #meas type is opposite of init
+                    # meas type is opposite of init
                     if zpm.p == BasisPrism.Z:
                         meas_type = "MX"
                     elif zpm.p == BasisPrism.X:
@@ -1455,46 +1159,59 @@ class SyndromeExtractionStimCC:
             if flag:
                 break
 
-        #find weight-4 stabilizer of previous z layer
-        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z-1]
-        prism_pipes_stabs_previous = self.mapping_full[z-1]
+        # find weight-4 stabilizer of previous z layer
+        prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z - 1]
+        prism_pipes_stabs_previous = self.mapping_full[z - 1]
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
             for stab in stabs:
                 stab_temp_labels = {pe.label for pe in stab.data_qubits}
-                if stab_labels == stab_temp_labels | set(pe.label for pe in stab_weight2.data_qubits):
+                if stab_labels == stab_temp_labels | set(
+                    pe.label for pe in stab_weight2.data_qubits
+                ):
                     stab_weight4 = stab
                     flag = True
                     break
             if flag:
                 break
-        if stab_weight4 is None: #this is a weight-6 stabilizer fully in the middle of the interface
+        if (
+            stab_weight4 is None
+        ):  # this is a weight-6 stabilizer fully in the middle of the interface
             return
         rec_lst = []
-        #find the rec labels for the triple detector.
-        #weight4 from previous layer
-        rec = next(
-            m for m in meas_rec_lst
-            if m.meas_type == meas_type
-            and m.z_value == z-1
-            and m.stabilizer == stab_weight4
-            and m.round == rounds-1
-        ).abs_rec - 1 - circuit.num_measurements
+        # find the rec labels for the triple detector.
+        # weight4 from previous layer
+        rec = (
+            next(
+                m
+                for m in meas_rec_lst
+                if m.meas_type == meas_type
+                and m.z_value == z - 1
+                and m.stabilizer == stab_weight4
+                and m.round == rounds - 1
+            ).abs_rec
+            - 1
+            - circuit.num_measurements
+        )
         rec_lst.append(rec)
 
         for stab_temp in [stab_weight2, stab_weight6]:
-            rec = next(
-                m for m in meas_rec_lst
-                if m.meas_type == meas_type
-                and m.z_value == z
-                and m.stabilizer == stab_temp
-                and m.round == r
-            ).abs_rec - 1 - circuit.num_measurements
+            rec = (
+                next(
+                    m
+                    for m in meas_rec_lst
+                    if m.meas_type == meas_type
+                    and m.z_value == z
+                    and m.stabilizer == stab_temp
+                    and m.round == r
+                ).abs_rec
+                - 1
+                - circuit.num_measurements
+            )
             rec_lst.append(rec)
 
-        print("rec", [circuit.num_measurements-i for i in rec_lst])
-        circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst]) #inplace replace
+        circuit.append("DETECTOR", [stim.target_rec(rec) for rec in rec_lst])  # inplace replace
 
     def add_trivial_detector_changed_shape(
         self,
@@ -1511,16 +1228,19 @@ class SyndromeExtractionStimCC:
 
         When a stabilizer changed shape and the initialization basis matches
         one of the syndrome bases, that syndrome measurement is deterministic.
-        Only performed if the very first z layer also initialized in the same basis. #!TODO is this the right condition?
+        Only performed if the very first z layer also initialized in the same basis.
         """
         first_z = self.z_values[0]
         first_zpm = self.prism_pipes_to_ZPM[first_z].get(prism_pipe)
         if first_zpm is None:
             # prism_pipe didn't exist at the first z layer, find by position match
             first_zpm = next(
-                (zpm for pp, zpm in self.prism_pipes_to_ZPM[first_z].items()
-                if self.pipe_matches(pp, prism_pipe)),
-                None
+                (
+                    zpm
+                    for pp, zpm in self.prism_pipes_to_ZPM[first_z].items()
+                    if self.pipe_matches(pp, prism_pipe)
+                ),
+                None,
             )
         if first_zpm is None:
             return
@@ -1532,27 +1252,38 @@ class SyndromeExtractionStimCC:
                 candidate_zpm = prism_pipes_zpm_temp[candidate_pipe]
                 if stab.stab_type == "XZ":
                     if candidate_zpm.p == BasisPrism.X and first_zpm.p == BasisPrism.X:
-                        rec = next(
-                            m for m in meas_rec_lst
-                            if m.meas_type == "MX"
-                            and m.pipe_prism == prism_pipe
-                            and m.z_value == z
-                            and m.stabilizer == stab
-                            and m.round == r
-                        ).abs_rec - 1 - circuit.num_measurements
+                        rec = (
+                            next(
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == "MX"
+                                and m.pipe_prism == prism_pipe
+                                and m.z_value == z
+                                and m.stabilizer == stab
+                                and m.round == r
+                            ).abs_rec
+                            - 1
+                            - circuit.num_measurements
+                        )
                         circuit.append("DETECTOR", [stim.target_rec(rec)])
                     elif candidate_zpm.p == BasisPrism.Z and first_zpm.p == BasisPrism.Z:
-                        rec = next(
-                            m for m in meas_rec_lst
-                            if m.meas_type == "MZ"
-                            and m.pipe_prism == prism_pipe
-                            and m.z_value == z
-                            and m.stabilizer == stab
-                            and m.round == r
-                        ).abs_rec - 1 - circuit.num_measurements
+                        rec = (
+                            next(
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == "MZ"
+                                and m.pipe_prism == prism_pipe
+                                and m.z_value == z
+                                and m.stabilizer == stab
+                                and m.round == r
+                            ).abs_rec
+                            - 1
+                            - circuit.num_measurements
+                        )
                         circuit.append("DETECTOR", [stim.target_rec(rec)])
+
     @staticmethod
-    def create_data_measurement_detectors(prism_pipe, stabs, zpm, meas_rec_lst, circuit, z, r):
+    def create_data_measurement_detectors(stabs, zpm, meas_rec_lst, circuit, z, r):
         """Create detectors based on data qubit measurements.
 
         i.e. for some stabilizer, take the data qubit measurements of the respective qubits
@@ -1561,12 +1292,12 @@ class SyndromeExtractionStimCC:
         this is for a current pipe/prism.
 
         #! ATTENTION! in the future, if there may be multiple data qubit measurements
-        #! on different pipes/prisms in the same z layer, one has to specifiy pipe_prism
+        #! on different pipes/prisms in the same z layer, one has to specify pipe_prism
         #! explicitly. otherwise the wrong stabilizer measurements may be assigned to the detector
         """
         if zpm.m == BasisPrism.N:
-            return circuit #do nothing if no measurement!
-        #only go through the stabilizers that are relevant for zpm.m
+            return circuit  # do nothing if no measurement!
+        # only go through the stabilizers that are relevant for zpm.m
         stabs_filtered = []
         for stab in stabs:
             if zpm.m == BasisPrism.Z:
@@ -1576,21 +1307,19 @@ class SyndromeExtractionStimCC:
                 if stab.stab_type in {"XZ", "X"}:
                     stabs_filtered.append(stab)
         for stab in stabs_filtered:
-            print("stab", [el.label for el in stab.data_qubits])
-            #only take the stabilizers whose data qubits are actually measured.
+            # only take the stabilizers whose data qubits are actually measured.
             detector_idx_lst = []
             flag = False
             for data in stab.data_qubits:
-                print("data qubit---", data.label)
-                print("zpm", zpm)
                 if zpm.m == BasisPrism.Z:
                     try:
                         match = next(
-                            m for m in meas_rec_lst
+                            m
+                            for m in meas_rec_lst
                             if m.meas_type == "MZ"
-                            #and m.pipe_prism == prism_pipe
+                            # and m.pipe_prism == prism_pipe
                             and m.z_value == z
-                            and m.stabilizer is None #right above, no stabilizer assigned
+                            and m.stabilizer is None  # right above, no stabilizer assigned
                             and m.round == r
                             and m.label == data.label
                         )
@@ -1600,43 +1329,53 @@ class SyndromeExtractionStimCC:
                 elif zpm.m == BasisPrism.X:
                     try:
                         match = next(
-                            m for m in meas_rec_lst
+                            m
+                            for m in meas_rec_lst
                             if m.meas_type == "MX"
-                            #and m.pipe_prism == prism_pipe
+                            # and m.pipe_prism == prism_pipe
                             and m.z_value == z
-                            and m.stabilizer is None #right above, no stabilizer assigned
+                            and m.stabilizer is None  # right above, no stabilizer assigned
                             and m.round == r
                             and m.label == data.label
                         )
                     except StopIteration:
                         flag = True
                         break
-                rec_current = match.abs_rec - 1 -circuit.num_measurements
+                rec_current = match.abs_rec - 1 - circuit.num_measurements
                 detector_idx_lst.append(rec_current)
 
-            if flag: #if flag, there was a stabilizer with data qubits that were never measured.
+            if flag:  # if flag, there was a stabilizer with data qubits that were never measured.
                 continue
             if zpm.m == BasisPrism.Z:
-                rec_prev = next( #previous stabilizer ancilla
-                    m for m in meas_rec_lst
-                    if m.meas_type == "MZ"
-                    #and m.pipe_prism == prism_pipe
-                    and m.z_value == z
-                    and m.stabilizer == stab
-                    and m.round == r #last stabilizer meas was officially in same round
-                ).abs_rec - 1 -circuit.num_measurements
+                rec_prev = (
+                    next(  # previous stabilizer ancilla
+                        m
+                        for m in meas_rec_lst
+                        if m.meas_type == "MZ"
+                        # and m.pipe_prism == prism_pipe
+                        and m.z_value == z
+                        and m.stabilizer == stab
+                        and m.round == r  # last stabilizer meas was officially in same round
+                    ).abs_rec
+                    - 1
+                    - circuit.num_measurements
+                )
             elif zpm.m == BasisPrism.X:
-                rec_prev = next( #previous stabilizer ancilla
-                    m for m in meas_rec_lst
-                    if m.meas_type == "MX"
-                    #and m.pipe_prism == prism_pipe
-                    and m.z_value == z
-                    and m.stabilizer == stab
-                    and m.round == r #last stabilizer meas was officially in same round
-                ).abs_rec - 1 -circuit.num_measurements
+                rec_prev = (
+                    next(  # previous stabilizer ancilla
+                        m
+                        for m in meas_rec_lst
+                        if m.meas_type == "MX"
+                        # and m.pipe_prism == prism_pipe
+                        and m.z_value == z
+                        and m.stabilizer == stab
+                        and m.round == r  # last stabilizer meas was officially in same round
+                    ).abs_rec
+                    - 1
+                    - circuit.num_measurements
+                )
             detector_idx_lst.append(rec_prev)
-            circuit.append("DETECTOR", [
-                    stim.target_rec(rec) for rec in detector_idx_lst])
+            circuit.append("DETECTOR", [stim.target_rec(rec) for rec in detector_idx_lst])
         return circuit
 
     def add_qubit_coords_to_circuit_quadratic(self, circuit: stim.Circuit) -> stim.Circuit:
@@ -1648,12 +1387,15 @@ class SyndromeExtractionStimCC:
         return coord_circuit
 
     def assign_qubit_coords_quadratic(self, scale: int = 1):
-        """Build a label -> (x, y) coordinate mapping from the quadratic (rect) layout,
-        shifted so all coordinates are non-negative."""
+        """Build quadratic coordinates.
+
+        Build a label -> (x, y) coordinate mapping from the quadratic (rect) layout,
+        shifted so all coordinates are non-negative.
+        """
         raw_coords = {}
 
-        for z, prism_pipe_dct in self.mapping_full.items():
-            for prism_pipe, prism_data in prism_pipe_dct.items():
+        for prism_pipe_dct in self.mapping_full.values():
+            for prism_data in prism_pipe_dct.values():
                 for pe in prism_data.positions:
                     if pe.label is not None and pe.rect is not None:
                         x, y = pe.rect
@@ -1672,10 +1414,13 @@ class SyndromeExtractionStimCC:
                                 if anc_pe.label is not None and anc_pe.rect is not None:
                                     x, y = anc_pe.rect
                                     coords = (x * scale, y * scale)
-                                    if anc_pe.label in raw_coords and raw_coords[anc_pe.label] != coords:
+                                    if (
+                                        anc_pe.label in raw_coords
+                                        and raw_coords[anc_pe.label] != coords
+                                    ):
                                         raise ValueError(
-                                            f"Inconsistent coords for ancilla label {anc_pe.label}: "
-                                            f"{raw_coords[anc_pe.label]} vs {coords}"
+                                            f"Inconsistent coords for ancilla label {anc_pe.label}:"
+                                            f" {raw_coords[anc_pe.label]} vs {coords}"
                                         )
                                     raw_coords[anc_pe.label] = coords
 
@@ -1684,8 +1429,7 @@ class SyndromeExtractionStimCC:
         min_y = min(c[1] for c in raw_coords.values())
 
         self.qubit_coords_quadratic = {
-            label: (x - min_x, y - min_y)
-            for label, (x, y) in raw_coords.items()
+            label: (x - min_x, y - min_y) for label, (x, y) in raw_coords.items()
         }
         return self.qubit_coords_quadratic
 
@@ -1718,28 +1462,877 @@ class SyndromeExtractionStimCC:
         for prism in prisms_in_obs:
             xy = (prism.position.x, prism.position.y)
             if xy in shared_xy:
-                reachable_via_horizontal.add(
-                    Position3DHex(prism.position.x, prism.position.y, 0)
-                )
+                reachable_via_horizontal.add(Position3DHex(prism.position.x, prism.position.y, 0))
         return reachable_via_horizontal
 
+    def build_syndrome_extraction_round(
+        self,
+        circuit,
+        r,
+        rounds,
+        z,
+        prism_pipes_zpm_temp,
+        prism_pipes_stabs,
+        cnot_order,
+        meas_rec_lst,
+        p_init,
+        p_gate2,
+        p_meas,
+        p_idle,
+        all_current_qubits,
+        current_tick,
+    ):
+        """Construct a single round of stabilizer measurements.
+
+        For weight-3, 5, 6 we use the superdense scheme and for weight-2 stabilizers
+        the inline folding scheme is applied.
+
+        This method also adds idling noise etc., ticks and X gates based on superdense
+        syndrome extraction's measurement outcomes.
+
+        The inline folding and superdense SE is slightly shifted towards each other such
+        that it works out with minimal overhead.
+
+        """
+        # ------------initialize all ancillas in that round--------------
+        for prism_pipe in prism_pipes_zpm_temp.keys():
+            zpm = prism_pipes_zpm_temp[prism_pipe]
+            stabs = prism_pipes_stabs[prism_pipe].stabilizers
+            data_positions = prism_pipes_stabs[prism_pipe].positions
+            for stab in stabs:
+                # Bell initialization
+                if stab.ancilla is not None:
+                    # ancillas are ordered left RX, right RZ
+                    label = stab.ancilla[0].label
+                    circuit.append("RX", label)
+                    circuit.append("Z_ERROR", label, p_init)
+                    label = stab.ancilla[1].label
+                    circuit.append("R", label)
+                    circuit.append("X_ERROR", label, p_init)
+                # --if r!=rounds-1 then add weight-2 stabilizer finalization of previous round--
+                if len(stab.data_qubits) == 2 and r != 0:  # and r != rounds-1:
+                    lst = [stab.data_qubits[0].label, stab.data_qubits[1].label]
+                    # defold CNOT
+                    if stab.stab_type == "X":
+                        circuit.append("CNOT", lst[::-1])
+                        circuit.append("DEPOLARIZE2", lst[::-1], p_gate2)  # cnot in other direction
+                    elif stab.stab_type == "Z":
+                        circuit.append("CNOT", lst)
+                        circuit.append("DEPOLARIZE2", lst, p_gate2)
+        # classical feedback for weight->2 stabs from previous round
+        if r != 0:
+            for prism_pipe in prism_pipes_zpm_temp.keys():
+                stabs = prism_pipes_stabs[prism_pipe].stabilizers
+                for stab in stabs:
+                    if len(stab.data_qubits) > 2 and stab.stab_type == "XZ":
+                        # no classical feedback for single type.
+                        neighbor_data = [
+                            qubit
+                            for qubit in stab.data_qubits
+                            if Position3DHex.rectangular_neighbor(qubit.rect, stab.ancilla[1].rect)
+                        ]
+                        rec_mz = (
+                            next(
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == "MZ"
+                                and m.pipe_prism == prism_pipe
+                                and m.z_value == z
+                                and m.stabilizer == stab
+                                and m.round == r - 1  # previous round
+                            ).abs_rec
+                            - 1
+                            - circuit.num_measurements
+                        )
+                        for data in neighbor_data:
+                            circuit.append("CX", [stim.target_rec(rec_mz), data.label])
+        # --add idling noise--
+        active = self.get_active_qubits_since_last_tick(circuit)
+        current_tick = self.append_tick_with_idle_noise(
+            circuit, all_current_qubits, current_tick, p_idle, active
+        )
+        # ------------CNOT for Bell for ancillas pairs--------------
+        for prism_pipe in prism_pipes_zpm_temp.keys():
+            zpm = prism_pipes_zpm_temp[prism_pipe]
+            stabs = prism_pipes_stabs[prism_pipe].stabilizers
+            data_positions = prism_pipes_stabs[prism_pipe].positions
+            for stab in stabs:
+                if stab.ancilla is not None:
+                    # Bell initialization CNOT
+                    lst = [stab.ancilla[0].label, stab.ancilla[1].label]
+                    circuit.append("CNOT", lst)
+                    circuit.append("DEPOLARIZE2", lst, p_gate2)
+        # --add idling noise--
+        active = self.get_active_qubits_since_last_tick(circuit)
+        current_tick = self.append_tick_with_idle_noise(
+            circuit, all_current_qubits, current_tick, p_idle, active
+        )
+        # --CNOT Gates for SE--
+        for direction in cnot_order:
+            for prism_pipe in prism_pipes_zpm_temp.keys():
+                zpm = prism_pipes_zpm_temp[prism_pipe]
+                stabs = prism_pipes_stabs[prism_pipe].stabilizers
+                data_positions = prism_pipes_stabs[prism_pipe].positions
+                for stab in stabs:
+                    if stab.stab_type == "XZ":
+                        # Z stabilizer
+                        if direction in {"bottom_z", "sides_z", "top_z"}:
+                            entries = getattr(stab, direction.removesuffix("_z"))
+                            for data in entries:
+                                # which ancilla is neighbor?
+                                for ancilla in stab.ancilla:
+                                    if Position3DHex.rectangular_neighbor(ancilla.rect, data.rect):
+                                        lst = [data.label, ancilla.label]
+                                        circuit.append("CNOT", lst)
+                                        circuit.append("DEPOLARIZE2", lst, p_gate2)
+                                        break
+                        # X stabilizer
+                        elif direction in {"bottom_x", "sides_x", "top_x"}:
+                            entries = getattr(stab, direction.removesuffix("_x"))
+                            for data in entries:
+                                # which ancilla is neighbor?
+                                for ancilla in stab.ancilla:
+                                    if Position3DHex.rectangular_neighbor(ancilla.rect, data.rect):
+                                        lst = [ancilla.label, data.label]
+                                        circuit.append("CNOT", lst)
+                                        circuit.append("DEPOLARIZE2", lst, p_gate2)
+                                        break
+                    # weight-5 and weight-3, and weight-6 stabilizers on STDW
+                    elif stab.stab_type == "X" and len(stab.data_qubits) > 2:
+                        if direction in {"bottom_x", "sides_x", "top_x"}:
+                            entries = getattr(stab, direction.removesuffix("_x"))
+                            for data in entries:
+                                # which ancilla is neighbor?
+                                for ancilla in stab.ancilla:
+                                    if Position3DHex.rectangular_neighbor(ancilla.rect, data.rect):
+                                        lst = [ancilla.label, data.label]
+                                        circuit.append("CNOT", lst)
+                                        circuit.append("DEPOLARIZE2", lst, p_gate2)
+                                        break
+                    elif stab.stab_type == "Z" and len(stab.data_qubits) > 2:
+                        if direction in {"bottom_z", "sides_z", "top_z"}:
+                            entries = getattr(stab, direction.removesuffix("_z"))
+                            for data in entries:
+                                # which ancilla is neighbor?
+                                for ancilla in stab.ancilla:
+                                    if Position3DHex.rectangular_neighbor(ancilla.rect, data.rect):
+                                        lst = [data.label, ancilla.label]
+                                        circuit.append("CNOT", lst)
+                                        circuit.append("DEPOLARIZE2", lst, p_gate2)
+                                        break
+            # --add idling noise--
+            active = self.get_active_qubits_since_last_tick(circuit)
+            current_tick = self.append_tick_with_idle_noise(
+                circuit, all_current_qubits, current_tick, p_idle, active
+            )
+        # --final bell and fold for weight2--
+        for prism_pipe in prism_pipes_zpm_temp.keys():
+            zpm = prism_pipes_zpm_temp[prism_pipe]
+            stabs = prism_pipes_stabs[prism_pipe].stabilizers
+            data_positions = prism_pipes_stabs[prism_pipe].positions
+            for stab in stabs:
+                if len(stab.data_qubits) > 2:
+                    # Bell final
+                    lst = [stab.ancilla[0].label, stab.ancilla[1].label]
+                    circuit.append("CNOT", lst)
+                    circuit.append("DEPOLARIZE2", lst, p_gate2)
+                elif len(stab.data_qubits) == 2:
+                    # first step of fold for weight-2 stabilizer
+                    lst = [stab.data_qubits[0].label, stab.data_qubits[1].label]
+                    # fold cnot
+                    if stab.stab_type == "X":
+                        circuit.append("CNOT", lst[::-1])
+                        circuit.append("DEPOLARIZE2", lst[::-1], p_gate2)  # cnot in other direction
+                    elif stab.stab_type == "Z":
+                        circuit.append("CNOT", lst)
+                        circuit.append("DEPOLARIZE2", lst, p_gate2)
+                else:
+                    raise TQECError("weight-2 stabilizer that is not single type - cannot be!")
+        # --add idling noise--
+        active = self.get_active_qubits_since_last_tick(circuit)
+        current_tick = self.append_tick_with_idle_noise(
+            circuit, all_current_qubits, current_tick, p_idle, active
+        )
+        # --measure ancilla both for weight-2 and others--
+        for prism_pipe in prism_pipes_zpm_temp.keys():
+            zpm = prism_pipes_zpm_temp[prism_pipe]
+            stabs = prism_pipes_stabs[prism_pipe].stabilizers
+            data_positions = prism_pipes_stabs[prism_pipe].positions
+            # measure stabs if higher weight, and also meas stab if weight=2
+            for stab in stabs:
+                if len(stab.data_qubits) > 2:
+                    # measurement
+                    if stab.stab_type in {"XZ", "X"}:
+                        label = stab.ancilla[0].label
+                        circuit.append("Z_ERROR", label, p_meas)
+                        circuit.append("MX", label)
+                        meas_rec_lst.append(
+                            MeasRecInfo(
+                                meas_type="MX",
+                                pipe_prism=prism_pipe,
+                                stabilizer=stab,
+                                abs_rec=circuit.num_measurements,
+                                z_value=z,
+                                round=r,
+                                label=label,
+                                tick=current_tick,
+                            )
+                        )  # add to record
+                    if stab.stab_type in {"XZ", "Z"}:
+                        label = stab.ancilla[1].label
+                        circuit.append("X_ERROR", label, p_meas)
+                        circuit.append("M", label)
+                        meas_rec_lst.append(
+                            MeasRecInfo(
+                                meas_type="MZ",
+                                pipe_prism=prism_pipe,
+                                stabilizer=stab,
+                                abs_rec=circuit.num_measurements,
+                                z_value=z,
+                                round=r,
+                                label=label,
+                                tick=current_tick,
+                            )
+                        )  # add to record
+                elif len(stab.data_qubits) == 2:
+                    # folded weight-2 stabilizer, perform meas on data qubit
+                    label = stab.data_qubits[1].label
+                    # measure in fold
+                    if stab.stab_type == "Z":
+                        circuit.append("X_ERROR", label, p_meas)
+                        circuit.append("M", label)
+                        meas_type = "MZ"
+                    elif stab.stab_type == "X":
+                        circuit.append("Z_ERROR", label, p_meas)
+                        circuit.append("MX", label)
+                        meas_type = "MX"
+                    meas_rec_lst.append(
+                        MeasRecInfo(
+                            meas_type=meas_type,
+                            pipe_prism=prism_pipe,
+                            stabilizer=stab,
+                            abs_rec=circuit.num_measurements,
+                            z_value=z,
+                            round=r,
+                            label=label,
+                            tick=current_tick,
+                        )
+                    )  # add to record
+                else:
+                    raise TQECError("weight-2 stabilizer that is not single type - cannot be!")
+        # ------add final  weight-2 CNOT gate that expands-------
+        # ------after folding if no further round available------
+        if r == rounds - 1:
+            flag = False
+            for prism_pipe in prism_pipes_zpm_temp.keys():
+                zpm = prism_pipes_zpm_temp[prism_pipe]
+                stabs = prism_pipes_stabs[prism_pipe].stabilizers
+                for stab in stabs:
+                    if len(stab.data_qubits) == 2:
+                        flag = True
+                        break
+            if flag:
+                # --add idling noise as this has to be its own tick--
+                active = self.get_active_qubits_since_last_tick(circuit)
+                current_tick = self.append_tick_with_idle_noise(
+                    circuit, all_current_qubits, current_tick, p_idle, active
+                )
+                for prism_pipe in prism_pipes_zpm_temp.keys():
+                    zpm = prism_pipes_zpm_temp[prism_pipe]
+                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
+                    data_positions = prism_pipes_stabs[prism_pipe].positions
+                    for stab in stabs:
+                        if len(stab.data_qubits) == 2:
+                            lst = [stab.data_qubits[0].label, stab.data_qubits[1].label]
+                            if stab.stab_type == "X":
+                                circuit.append("CNOT", lst[::-1])
+                                circuit.append("DEPOLARIZE2", lst[::-1], p_gate2)
+                                # cnot in other direction, thus ::-1
+                            elif stab.stab_type == "Z":
+                                circuit.append("CNOT", lst)
+                                circuit.append("DEPOLARIZE2", lst, p_gate2)
+            # classical feedback. add this in its own layer
+            # as it is not assumed to be physical anyways
+            # important: this must be AFTER folding/unfolding of weight-2 stabilizers,
+            # otherwise it may mix them up
+            for prism_pipe in prism_pipes_zpm_temp.keys():
+                zpm = prism_pipes_zpm_temp[prism_pipe]
+                stabs = prism_pipes_stabs[prism_pipe].stabilizers
+                data_positions = prism_pipes_stabs[prism_pipe].positions
+                # measure stabs if higher weight, and also meas stab if weight=2
+                for stab in stabs:
+                    if len(stab.data_qubits) > 2 and stab.stab_type == "XZ":
+                        # no classical feedback for single type!
+                        # add classical feedback X^b, find neighboring data to ancilla[1]
+                        # only add classical feedback if actually MZ was done
+                        neighbor_data = [
+                            qubit
+                            for qubit in stab.data_qubits
+                            if Position3DHex.rectangular_neighbor(qubit.rect, stab.ancilla[1].rect)
+                        ]
+                        rec_current = (
+                            next(
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == "MZ"
+                                and m.pipe_prism == prism_pipe
+                                and m.z_value == z
+                                and m.stabilizer == stab
+                                and m.round == r
+                            ).abs_rec
+                            - 1
+                            - circuit.num_measurements
+                        )
+                        for data in neighbor_data:
+                            # classically controlled X gate
+                            circuit.append("CX", [stim.target_rec(rec_current), data.label])
+                            # no error added here because assume that those are classically tracked
+        # if a prism pipe has zpm.m != N then data qubits need to be measured
+        # after final additional round for weight-2 stabilizer meas
+        for prism_pipe in prism_pipes_zpm_temp.keys():
+            zpm = prism_pipes_zpm_temp[prism_pipe]
+            stabs = prism_pipes_stabs[prism_pipe].stabilizers
+            data_positions = prism_pipes_stabs[prism_pipe].positions
+            lst = [data.label for data in data_positions]
+            if (
+                z != max(self.z_values) and r == rounds - 1
+            ):  # if last z values then handled at the end.
+                if zpm.m == BasisPrism.Z:
+                    # meas data qubits Z
+                    circuit.append("X_ERROR", lst, p_meas)
+                    circuit.append("M", lst)
+                    base_rec = circuit.num_measurements - len(lst)
+                    for i, qubit_label in enumerate(lst):
+                        meas_rec_lst.append(
+                            MeasRecInfo(
+                                meas_type="MZ",
+                                pipe_prism=prism_pipe,
+                                stabilizer=None,
+                                abs_rec=base_rec + i + 1,
+                                z_value=z,
+                                round=r,
+                                label=qubit_label,  # now correctly the individual qubit label
+                                tick=current_tick,
+                            )
+                        )
+                elif zpm.m == BasisPrism.X:
+                    # meas data qubits X
+                    circuit.append("Z_ERROR", lst, p_meas)
+                    circuit.append("MX", lst)
+                    base_rec = circuit.num_measurements - len(lst)
+                    for i, qubit_label in enumerate(lst):
+                        meas_rec_lst.append(
+                            MeasRecInfo(
+                                meas_type="MX",
+                                pipe_prism=prism_pipe,
+                                stabilizer=None,
+                                abs_rec=base_rec + i + 1,
+                                z_value=z,
+                                round=r,
+                                label=qubit_label,  # now correctly the individual qubit label
+                                tick=current_tick,
+                            )
+                        )
+        # --add idling noise--
+        active = self.get_active_qubits_since_last_tick(circuit)
+        current_tick = self.append_tick_with_idle_noise(
+            circuit, all_current_qubits, current_tick, p_idle, active
+        )
+
+        return current_tick, meas_rec_lst, circuit
+
+    def add_detector_annotation(
+        self,
+        circuit,
+        meas_rec_lst,
+        initialized_qubits,
+        prism_pipes_zpm_temp,
+        prism_pipes_stabs,
+        z,
+        r,
+        rounds,
+        s,
+    ):
+        """Add detector annotations.
+
+        The detector annotations correspond to the measurements
+        generated in the current syndrome-extraction round.
+        """
+        meas_rec_lst_data = self.data_meas_rec_lst_pipe_prism(meas_rec_lst, z, rounds)
+        for prism_pipe in prism_pipes_zpm_temp.keys():
+            zpm = prism_pipes_zpm_temp[prism_pipe]
+            stabs = prism_pipes_stabs[prism_pipe].stabilizers
+            if r == 0:
+                # only add those default detectors based on zpm.p
+                relevant = []  # this must be reset after each run.
+                if zpm.p == BasisPrism.Z:
+                    relevant = [
+                        m
+                        for m in meas_rec_lst
+                        if m.meas_type == "MZ"
+                        and m.pipe_prism == prism_pipe
+                        and m.z_value == z
+                        and m.round == r
+                    ]
+                elif zpm.p == BasisPrism.X:
+                    relevant = [
+                        m
+                        for m in meas_rec_lst
+                        if m.meas_type == "MX"
+                        and m.pipe_prism == prism_pipe
+                        and m.z_value == z
+                        and m.round == r
+                    ]
+                for m in relevant:
+                    offset = m.abs_rec - 1 - circuit.num_measurements
+                    circuit.append("DETECTOR", [stim.target_rec(offset)])
+                if zpm.p == BasisPrism.N and s != 0:
+                    # IMPORTANT: if basis N, you need to compare to the previous z layer
+                    stabs_temp = [
+                        el
+                        for el in stabs
+                        if len(el.data_qubits) != 3
+                        and len(el.data_qubits) != 5
+                        and len(el.data_qubits) != 2
+                    ]
+                    for stab in stabs_temp:
+                        changed_shape = self.stabilizer_changed_shape_bell(z, prism_pipe, stab)
+                        if not changed_shape:
+                            # skip the stabilizer if it contains a data qubit
+                            # which was just re-initialized
+                            if any(q in initialized_qubits for q in stab.data_qubits):
+                                continue
+                            # compare Z stabilizer to previous z layer (stab remained the same)
+                            rec_current = (
+                                next(
+                                    m
+                                    for m in meas_rec_lst
+                                    if m.meas_type == "MZ"
+                                    and m.pipe_prism == prism_pipe
+                                    and m.z_value == z
+                                    and m.stabilizer == stab
+                                    and m.round == r
+                                ).abs_rec
+                                - 1
+                                - circuit.num_measurements
+                            )
+                            target_rects = {pe.rect for pe in stab.data_qubits}
+                            rec_prev = (
+                                next(
+                                    m
+                                    for m in meas_rec_lst
+                                    if m.meas_type == "MZ"
+                                    and self.pipe_matches(m.pipe_prism, prism_pipe)
+                                    and m.z_value == z - 1
+                                    and m.stabilizer is not None
+                                    and {pe.rect for pe in m.stabilizer.data_qubits} == target_rects
+                                    and m.round == rounds - 1
+                                ).abs_rec
+                                - 1
+                                - circuit.num_measurements
+                            )
+                            circuit.append(
+                                "DETECTOR",
+                                [stim.target_rec(rec_current), stim.target_rec(rec_prev)],
+                            )
+                            # compare X stabilizer to previous z layer (stab remained the same)
+                            rec_current = (
+                                next(
+                                    m
+                                    for m in meas_rec_lst
+                                    if m.meas_type == "MX"
+                                    and m.pipe_prism == prism_pipe
+                                    and m.z_value == z
+                                    and m.stabilizer == stab
+                                    and m.round == r
+                                ).abs_rec
+                                - 1
+                                - circuit.num_measurements
+                            )
+                            target_rects = {pe.rect for pe in stab.data_qubits}
+                            rec_prev = (
+                                next(
+                                    m
+                                    for m in meas_rec_lst
+                                    if m.meas_type == "MX"
+                                    and self.pipe_matches(m.pipe_prism, prism_pipe)
+                                    and m.z_value == z - 1
+                                    and m.stabilizer is not None
+                                    and {pe.rect for pe in m.stabilizer.data_qubits} == target_rects
+                                    and m.round == rounds - 1
+                                ).abs_rec
+                                - 1
+                                - circuit.num_measurements
+                            )
+                            circuit.append(
+                                "DETECTOR",
+                                [stim.target_rec(rec_current), stim.target_rec(rec_prev)],
+                            )
+                        else:
+                            # if stabilizer changed shape but init and
+                            # stabilizer are same basis, add trivial detector
+                            self.add_trivial_detector_changed_shape(
+                                stab,
+                                prism_pipe,
+                                prism_pipes_stabs,
+                                prism_pipes_zpm_temp,
+                                meas_rec_lst,
+                                circuit,
+                                z,
+                                r,
+                            )
+                            # triple detector in basis in which we do not initialize
+                            # (i.e. stabilizers which can form horizontal cs)
+                            # e.g. weight-4 in previous layer
+                            # + current weight-6 and current weight-2
+                            self.add_triple_detector_changed_shape_merge_opposite(
+                                stab, meas_rec_lst, circuit, z, r, rounds
+                            )
+                            # in the same basis as initialization just add double detectors
+                            self.add_double_detector_changed_shape_merge_same(
+                                stab, meas_rec_lst, circuit, z, r, rounds
+                            )
+                            if len(meas_rec_lst_data) != 0:
+                                # triple detector in the basis of data qubit measurements
+                                # compare former weight-6 with current weight-4 and data meas
+                                # on location of weight-2
+                                # but not weight-2 stabilizer
+                                # because this does not exist in this basis during split
+                                self.add_triple_detector_changed_shape_split_same(
+                                    stab, meas_rec_lst, circuit, z, r, rounds, meas_rec_lst_data
+                                )
+                                # triple detector in the opposite basis
+                                # compare former weight-6 with former weight-2 and current weight-4
+                                # during split
+                                self.add_triple_detector_changed_shape_split_opposite(
+                                    stab, meas_rec_lst, circuit, z, r, rounds, meas_rec_lst_data
+                                )
+            else:  # compare this with previous round meas
+                for stab in stabs:
+                    # ==usual double detectors that compare current and previous round==
+                    if stab.stab_type in {"XZ", "Z"}:
+                        # z stabilizer
+                        rec_current = (
+                            next(
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == "MZ"
+                                and m.pipe_prism == prism_pipe
+                                and m.z_value == z
+                                and m.stabilizer == stab
+                                and m.round == r
+                            ).abs_rec
+                            - 1
+                            - circuit.num_measurements
+                        )
+
+                        rec_prev = (
+                            next(
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == "MZ"
+                                and m.pipe_prism == prism_pipe
+                                and m.z_value == z
+                                and m.stabilizer == stab
+                                and m.round == r - 1
+                            ).abs_rec
+                            - 1
+                            - circuit.num_measurements
+                        )
+
+                        circuit.append(
+                            "DETECTOR", [stim.target_rec(rec_current), stim.target_rec(rec_prev)]
+                        )
+                    if stab.stab_type in {"XZ", "X"}:
+                        # x stabilizer
+                        rec_current = (
+                            next(
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == "MX"
+                                and m.pipe_prism == prism_pipe
+                                and m.z_value == z
+                                and m.stabilizer == stab
+                                and m.round == r
+                            ).abs_rec
+                            - 1
+                            - circuit.num_measurements
+                        )
+
+                        rec_prev = (
+                            next(
+                                m
+                                for m in meas_rec_lst
+                                if m.meas_type == "MX"
+                                and m.pipe_prism == prism_pipe
+                                and m.z_value == z
+                                and m.stabilizer == stab
+                                and m.round == r - 1
+                            ).abs_rec
+                            - 1
+                            - circuit.num_measurements
+                        )
+
+                        circuit.append(
+                            "DETECTOR", [stim.target_rec(rec_current), stim.target_rec(rec_prev)]
+                        )
+            # if, not elif because above else should be done nevertheless too.
+            if r == rounds - 1:
+                # ==create detectors for the intermediate measurements==
+                circuit = self.create_data_measurement_detectors(
+                    stabs, zpm, meas_rec_lst, circuit, z, r
+                )
+        return circuit
+
+    def add_final_meas_and_obs(
+        self,
+        circuit,
+        meas_rec_lst,
+        prism_pipes_zpm_temp,
+        prism_pipes_stabs,
+        horizontal_pipes_cs_lst,
+        prisms_in_obs_lst,
+        cs_lst,
+        z,
+        r,
+        current_tick,
+        p_meas,
+    ):
+        """Add final measurements and observables.
+
+        This applied final data qubit measurements, parts of which are
+        included in the logical observables.
+        """
+        # ==final measurements==
+        for prism_pipe in prism_pipes_zpm_temp.keys():
+            zpm = prism_pipes_zpm_temp[prism_pipe]
+            stabs = prism_pipes_stabs[prism_pipe].stabilizers
+            data_positions = prism_pipes_stabs[prism_pipe].positions
+            if zpm.m == BasisPrism.Z:
+                for data in data_positions:
+                    label = data.label
+                    circuit.append("X_ERROR", label, p_meas)
+                    circuit.append("M", label)
+                    meas_rec_lst.append(
+                        MeasRecInfo(
+                            meas_type="MZ",
+                            pipe_prism=prism_pipe,
+                            stabilizer=None,
+                            abs_rec=circuit.num_measurements,
+                            z_value=z,
+                            round=r,
+                            label=label,
+                            tick=current_tick,
+                        )
+                    )  # add to record
+            elif zpm.m == BasisPrism.X:
+                for data in data_positions:
+                    label = data.label
+                    circuit.append("Z_ERROR", label, p_meas)
+                    circuit.append("MX", label)
+                    meas_rec_lst.append(
+                        MeasRecInfo(
+                            meas_type="MX",
+                            pipe_prism=prism_pipe,
+                            stabilizer=None,
+                            abs_rec=circuit.num_measurements,
+                            z_value=z,
+                            round=r,
+                            label=label,
+                            tick=current_tick,
+                        )
+                    )  # add to record
+            else:
+                raise TQECError("The last z requires data measurements in zpm.m")
+
+        for obs_idx, cs in enumerate(cs_lst):
+            prisms_in_obs = prisms_in_obs_lst[obs_idx]
+            horizontal_pipes_cs = horizontal_pipes_cs_lst[obs_idx]
+            if cs is None:  # memory experiment case
+                reachable_via_horizontal = set()
+            else:
+                reachable_via_horizontal = self.find_reachable_via_horizontal(cs, prisms_in_obs)
+
+            # ==final round of detectors based on stabilizers based on zpm.m==
+            for prism_pipe in prism_pipes_zpm_temp.keys():
+                zpm = prism_pipes_zpm_temp[prism_pipe]
+                stabs = prism_pipes_stabs[prism_pipe].stabilizers
+                data_positions = prism_pipes_stabs[prism_pipe].positions
+                circuit = self.create_data_measurement_detectors(
+                    stabs, zpm, meas_rec_lst, circuit, z, r
+                )
+                # ==correlation surface for observable==
+                num_meas = circuit.num_measurements
+                meas_rec_vertical, meas_rec_horizontal = (
+                    self.identify_correlation_surface_measurements(
+                        horizontal_pipes_cs,
+                        meas_rec_lst,
+                        num_meas,
+                    )
+                )
+                # ==observable==
+                star_ops_x, star_ops_z = self.result_dct[z]["star"]
+                star_ops_x = [[Position3DHex(p.x, p.y, 0) for p in op] for op in star_ops_x]
+                star_ops_z = [[Position3DHex(p.x, p.y, 0) for p in op] for op in star_ops_z]
+                # find the star_ops_z that are related to the prisms in prisms_in_obs
+                involved_data_qubits = []
+                for prism in prisms_in_obs:
+                    involved_data_qubits += self.mapping_full[z][prism].positions
+                # filter both star_ops_x and star_ops_z based on
+                # the involved data qubits and the current data_positions
+                data_hex_set = {pe.hex for pe in data_positions if pe.hex is not None}
+                involved_hex_set = {pe.hex for pe in involved_data_qubits if pe.hex is not None}
+                star_ops_z_current = [
+                    op for op in star_ops_z if set(op) & data_hex_set and set(op) & involved_hex_set
+                ]
+                star_ops_x_current = [
+                    op for op in star_ops_x if set(op) & data_hex_set and set(op) & involved_hex_set
+                ]
+
+                # filter star_ops based on whether observable in CS
+                # and whether part of current data qubits
+                data_positions_hex = {el.hex for el in data_positions}
+                star_ops_z_current = [
+                    [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
+                    for op in star_ops_z_current
+                    if set(op) & data_hex_set and set(op) & data_positions_hex
+                ]
+
+                star_ops_x_current = [
+                    [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
+                    for op in star_ops_x_current
+                    if set(op) & data_hex_set and set(op) & data_positions_hex
+                ]
+
+                if zpm.m == BasisPrism.Z:
+                    for star_op_z in star_ops_z_current:
+                        obs_targets = []
+                        for pos in star_op_z:
+                            pos_flat = Position3DHex(pos.x, pos.y, 0)
+                            pe = next(p for p in data_positions if p.hex == pos_flat)
+                            rec = (
+                                next(
+                                    m
+                                    for m in meas_rec_lst
+                                    if m.meas_type == "MZ"
+                                    and m.z_value == z
+                                    and m.stabilizer is None
+                                    and m.round == r
+                                    and m.label == pe.label
+                                ).abs_rec
+                                - 1
+                                - circuit.num_measurements
+                            )
+                            obs_targets.append(stim.target_rec(rec))
+                        # add correlation surface measurements if needed!
+                        star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_z}
+                        star_prism_position = next(
+                            (
+                                prism.position
+                                for prism in prisms_in_obs
+                                if any(
+                                    pe.hex is not None
+                                    and Position3DHex(pe.hex.x, pe.hex.y, z) in star_op_hex_set
+                                    for pe in self.mapping_full[z][prism].positions
+                                )
+                            ),
+                            None,
+                        )
+                        if star_prism_position is not None:
+                            star_prism_position = Position3DHex(
+                                star_prism_position.x, star_prism_position.y, 0
+                            )
+                        needs_cs_correction = (
+                            star_prism_position is not None
+                            and star_prism_position in reachable_via_horizontal
+                        )
+                        if needs_cs_correction:
+                            for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
+                                if key_type == BasisPrism.Z:
+                                    obs_targets += meas_lst
+                            for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
+                                if key_type == BasisPrism.Z:
+                                    obs_targets += meas_lst
+                            circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
+                        elif star_prism_position is not None:
+                            circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
+                        else:
+                            continue
+                elif zpm.m == BasisPrism.X:
+                    for star_op_x in star_ops_x_current:
+                        obs_targets = []
+                        for pos in star_op_x:
+                            pos_flat = Position3DHex(pos.x, pos.y, 0)
+                            pe = next(p for p in data_positions if p.hex == pos_flat)
+                            rec = (
+                                next(
+                                    m
+                                    for m in meas_rec_lst
+                                    if m.meas_type == "MX"
+                                    and m.z_value == z
+                                    and m.stabilizer is None
+                                    and m.round == r
+                                    and m.label == pe.label
+                                ).abs_rec
+                                - 1
+                                - circuit.num_measurements
+                            )
+                            obs_targets.append(stim.target_rec(rec))
+                        # add correlation surface measurements if needed!
+                        star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_x}
+                        star_prism_position = next(
+                            (
+                                prism.position
+                                for prism in prisms_in_obs
+                                if any(
+                                    pe.hex is not None
+                                    and Position3DHex(pe.hex.x, pe.hex.y, z) in star_op_hex_set
+                                    for pe in self.mapping_full[z][prism].positions
+                                )
+                            ),
+                            None,
+                        )
+                        if star_prism_position is not None:
+                            star_prism_position = Position3DHex(
+                                star_prism_position.x, star_prism_position.y, 0
+                            )
+                        needs_cs_correction = (
+                            star_prism_position is not None
+                            and star_prism_position in reachable_via_horizontal
+                        )
+                        if needs_cs_correction:
+                            for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
+                                if key_type == BasisPrism.X:
+                                    obs_targets += meas_lst
+                            for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
+                                if key_type == BasisPrism.X:
+                                    obs_targets += meas_lst
+                            circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
+                        elif star_prism_position is not None:
+                            circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
+                        else:
+                            continue
+        return circuit, meas_rec_lst
 
     def create_stim_circuit_bell_multiplexing(
-            self,
-            rounds,
-            p_init: float,
-            p_meas: float,
-            p_idle: float,
-            p_gate2: float,
-            cs_lst: list[CorrelationSurface],
-        ) -> stim.Circuit:
+        self,
+        rounds,
+        p_init: float,
+        p_meas: float,
+        p_idle: float,
+        p_gate2: float,
+        cs_lst: list[CorrelationSurface],
+    ) -> stim.Circuit:
         """Create a syndrome extraction circuit based on Bell Multiplexing."""
-        #store the measurement record labes together with vital information
-        meas_rec_lst: list[MeasRecInfo] = [] #IMPORTANT label starts from 1, not from 0 - i.e. offset by 1 between what is displayed in the circuit svg and the measreclst.
-        cnot_order = ["bottom_z", "sides_z", "top_z","bottom_x", "sides_x", "top_x"] #just choose a convention
+        # store the measurement record labes together with vital information
+        # IMPORTANT label starts from 1, not from 0 - i.e. offset by 1 between what
+        # is displayed in the circuit svg and the measreclst.
+        meas_rec_lst: list[MeasRecInfo] = []
+        # just choose a convention for the CNOT order
+        cnot_order = ["bottom_z", "sides_z", "top_z", "bottom_x", "sides_x", "top_x"]
         circuit = stim.Circuit()
 
-        #special case if memory experiment
+        # special case if memory experiment
         memory_experiment = (
             len(cs_lst) == 0
             and len(self.prism_graph.prisms) == 1
@@ -1754,14 +2347,14 @@ class SyndromeExtractionStimCC:
             # run the observable loop once
             cs_lst = [None]
         else:
-            #only check the relevant horizontal correlation surfaces and whether ver/hor cs
+            # only check the relevant horizontal correlation surfaces and whether ver/hor cs
             horizontal_pipes_cs_lst = []
             for cs in cs_lst:
                 horizontal_pipes_cs = self.prism_graph.find_ver_hor_correlation_surface(cs)
                 horizontal_pipes_cs_lst.append(horizontal_pipes_cs)
 
-            #later, for OBS_INCLUDE you need to know which prisms in the final z layer
-            #are actually involved in the given correlation surfaces
+            # later, for OBS_INCLUDE you need to know which prisms in the final z layer
+            # are actually involved in the given correlation surfaces
             zx = self.prism_graph.to_zx_graph()
             max_z = max(self.z_values)
 
@@ -1769,22 +2362,22 @@ class SyndromeExtractionStimCC:
             for cs in cs_lst:
                 vertex_ids = cs.span_vertices
                 positions_in_cs = {vid: zx.positions[vid] for vid in vertex_ids}
-                prisms_in_cs = [prism for prism
-                                in self.prism_graph.prisms if prism.position in positions_in_cs.values()]
+                prisms_in_cs = [
+                    prism
+                    for prism in self.prism_graph.prisms
+                    if prism.position in positions_in_cs.values()
+                ]
                 prisms_in_obs = [prism for prism in prisms_in_cs if prism.position.z == max_z]
                 prisms_in_obs_lst.append(prisms_in_obs)
 
         for s, z in enumerate(self.z_values):
-            print(f"========================z={z}=======================")
-            star_ops_x, star_ops_z = self.result_dct[z]["star"]
-
-            current_tick = 0 #re-initialize tick label per z
-            #zpm values
+            current_tick = 0  # re-initialize tick label per z
+            # zpm values
             prism_pipes_zpm_temp = self.prism_pipes_to_ZPM[z]
-            #stabilizer info etc
+            # stabilizer info etc
             prism_pipes_stabs = self.mapping_full[z]
 
-            #define all current qubits (both ancilla and data) for comparison for idiling noise
+            # define all current qubits (both ancilla and data) for comparison for idiling noise
             all_current_qubits = []
             for prism_pipe, prism_data in prism_pipes_stabs.items():
                 # data qubits
@@ -1795,8 +2388,9 @@ class SyndromeExtractionStimCC:
                         if stab.ancilla:
                             all_current_qubits.extend(stab.ancilla)
 
-            #initialization of data qubits
-            initialized_qubits = [] #need to track the currently initialized qubits to avoid incorrect detectors at r=0
+            # initialization of data qubits
+            # need to track the currently initialized qubits to avoid incorrect detectors at r=0
+            initialized_qubits = []
             for prism_pipe in prism_pipes_zpm_temp.keys():
                 zpm = prism_pipes_zpm_temp[prism_pipe]
                 data_positions = prism_pipes_stabs[prism_pipe].positions
@@ -1810,781 +2404,53 @@ class SyndromeExtractionStimCC:
                     initialized_qubits += data_positions
                     circuit.append("RX", lst)
                     circuit.append("Z_ERROR", lst, p_init)
-            #r rounds of error correction based on stabilizer_type
+            # r rounds of error correction based on stabilizer_type
             for r in range(rounds):
-                #------------initialize all ancillas in that round--------------
-                for prism_pipe in prism_pipes_zpm_temp.keys():
-                    zpm = prism_pipes_zpm_temp[prism_pipe]
-                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                    data_positions = prism_pipes_stabs[prism_pipe].positions
-                    for stab in stabs:
-                        #Bell initialization
-                        if stab.ancilla is not None:
-                            #ancillas are ordered left RX, right RZ
-                            label = stab.ancilla[0].label
-                            circuit.append("RX", label)
-                            circuit.append("Z_ERROR", label, p_init)
-                            label = stab.ancilla[1].label
-                            circuit.append("R", label)
-                            circuit.append("X_ERROR", label, p_init)
-                        #--if r!=rounds-1 then add weight-2 stabilizer finalization of previous round--
-                        if len(stab.data_qubits) == 2 and r !=0:# and r != rounds-1:
-                            lst = [stab.data_qubits[0].label, stab.data_qubits[1].label]
-                            print("defold CNOT", lst)
-                            if stab.stab_type == "X":
-                                circuit.append("CNOT", lst[::-1])
-                                circuit.append("DEPOLARIZE2", lst[::-1], p_gate2) #cnot in other direction
-                            elif stab.stab_type == "Z":
-                                circuit.append("CNOT", lst)
-                                circuit.append("DEPOLARIZE2", lst, p_gate2)
-                # classical feedback for weight->2 stabs from previous round
-                if r != 0:
-                    for prism_pipe in prism_pipes_zpm_temp.keys():
-                        stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                        for stab in stabs:
-                            if len(stab.data_qubits) > 2 and stab.stab_type == "XZ": #no classical feedback for single type.
-                                neighbor_data = [
-                                    qubit for qubit in stab.data_qubits
-                                    if Position3DHex.rectangular_neighbor(qubit.rect, stab.ancilla[1].rect)
-                                ]
-                                rec_mz = next(
-                                    m for m in meas_rec_lst
-                                    if m.meas_type == "MZ"
-                                    and m.pipe_prism == prism_pipe
-                                    and m.z_value == z
-                                    and m.stabilizer == stab
-                                    and m.round == r - 1  # previous round
-                                ).abs_rec - 1 - circuit.num_measurements
-                                for data in neighbor_data:
-                                    circuit.append("CX", [stim.target_rec(rec_mz), data.label])
-                #--add idling noise--
-                active = self.get_active_qubits_since_last_tick(circuit)
-                current_tick = self.append_tick_with_idle_noise(
-                    circuit,
-                    all_current_qubits,
-                    current_tick,
-                    p_idle,
-                    active)
-                #------------CNOT for Bell for ancillas pairs--------------
-                for prism_pipe in prism_pipes_zpm_temp.keys():
-                    zpm = prism_pipes_zpm_temp[prism_pipe]
-                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                    data_positions = prism_pipes_stabs[prism_pipe].positions
-                    for stab in stabs:
-                        if stab.ancilla is not None:
-                            #Bell initialization CNOT
-                            lst = [stab.ancilla[0].label, stab.ancilla[1].label]
-                            circuit.append("CNOT", lst)
-                            circuit.append("DEPOLARIZE2", lst, p_gate2)
-                #--add idling noise--
-                active = self.get_active_qubits_since_last_tick(circuit)
-                current_tick = self.append_tick_with_idle_noise(
-                    circuit,
-                    all_current_qubits,
-                    current_tick,
-                    p_idle,
-                    active)
-                #--CNOT Gates for SE--
-                for direction in cnot_order:
-                    for prism_pipe in prism_pipes_zpm_temp.keys():
-                        zpm = prism_pipes_zpm_temp[prism_pipe]
-                        stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                        data_positions = prism_pipes_stabs[prism_pipe].positions
-                        for stab in stabs:
-                            if stab.stab_type == "XZ":
-                                #Z stabilizer
-                                if direction in {"bottom_z", "sides_z", "top_z"}:
-                                    print("stabtype XZ, Z stab")
-                                    entries = getattr(stab, direction.removesuffix("_z"))
-                                    print("entries", entries)
-                                    for data in entries:
-                                        #which ancilla is neighbor?
-                                        for ancilla in stab.ancilla:
-                                            if Position3DHex.rectangular_neighbor(ancilla.rect, data.rect):
-                                                lst = [data.label, ancilla.label]
-                                                print("lst", lst)
-                                                circuit.append("CNOT", lst)
-                                                circuit.append("DEPOLARIZE2", lst, p_gate2)
-                                                break
-                                #X stabilizer
-                                elif direction in {"bottom_x", "sides_x", "top_x"}:
-                                    print("stabtype XZ, X stab")
-                                    print("direction")
-                                    entries = getattr(stab, direction.removesuffix("_x"))
-                                    print("entries", entries)
-                                    for data in entries:
-                                        #which ancilla is neighbor?
-                                        for ancilla in stab.ancilla:
-                                            if Position3DHex.rectangular_neighbor(ancilla.rect, data.rect):
-                                                lst = [ancilla.label, data.label]
-                                                print("lst", lst)
-                                                circuit.append("CNOT", lst)
-                                                circuit.append("DEPOLARIZE2", lst, p_gate2)
-                                                break
-                            #weight-5 and weight-3, and weight-6 stabilizers on STDW
-                            elif stab.stab_type == "X" and len(stab.data_qubits) > 2:
-                                print("stab type X, >2", [x.label for x in stab.data_qubits])
-                                if direction in {"bottom_x", "sides_x", "top_x"}:
-                                    entries = getattr(stab, direction.removesuffix("_x"))
-                                    print("direction", direction)
-                                    print("entries", entries)
-                                    for data in entries:
-                                        #which ancilla is neighbor?
-                                        for ancilla in stab.ancilla:
-                                            if Position3DHex.rectangular_neighbor(ancilla.rect, data.rect):
-                                                lst = [ancilla.label, data.label]
-                                                print("qubits CNOT", lst)
-                                                circuit.append("CNOT", lst)
-                                                circuit.append("DEPOLARIZE2", lst, p_gate2)
-                                                break
-                            elif stab.stab_type == "Z" and len(stab.data_qubits) > 2:
-                                print("stab type Z, >2", [x.label for x in stab.data_qubits])
-                                if direction in {"bottom_z", "sides_z", "top_z"}:
-                                    entries = getattr(stab, direction.removesuffix("_z"))
-                                    print("direction", direction)
-                                    print("entries", entries)
-                                    for data in entries:
-                                        #which ancilla is neighbor?
-                                        for ancilla in stab.ancilla:
-                                            if Position3DHex.rectangular_neighbor(ancilla.rect, data.rect):
-                                                lst = [data.label, ancilla.label]
-                                                print("qubits CNOT", lst)
-                                                circuit.append("CNOT", lst)
-                                                circuit.append("DEPOLARIZE2", lst, p_gate2)
-                                                break
-                    #--add idling noise--
-                    active = self.get_active_qubits_since_last_tick(circuit)
-                    current_tick = self.append_tick_with_idle_noise(
-                        circuit,
-                        all_current_qubits,
-                        current_tick,
-                        p_idle,
-                        active)
-                #--final bell and fold for weight2--
-                for prism_pipe in prism_pipes_zpm_temp.keys():
-                    zpm = prism_pipes_zpm_temp[prism_pipe]
-                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                    data_positions = prism_pipes_stabs[prism_pipe].positions
-                    for stab in stabs:
-                        if len(stab.data_qubits) > 2:
-                            #Bell final
-                            lst = [stab.ancilla[0].label, stab.ancilla[1].label]
-                            circuit.append("CNOT", lst)
-                            circuit.append("DEPOLARIZE2", lst, p_gate2)
-                        elif len(stab.data_qubits) == 2:
-                            #first step of fold for weight-2 stabilizer
-                            lst = [stab.data_qubits[0].label, stab.data_qubits[1].label]
-                            print("fold", lst)
-                            if stab.stab_type == "X":
-                                circuit.append("CNOT", lst[::-1])
-                                circuit.append("DEPOLARIZE2", lst[::-1], p_gate2) #cnot in other direction
-                            elif stab.stab_type == "Z":
-                                circuit.append("CNOT", lst)
-                                circuit.append("DEPOLARIZE2", lst, p_gate2)
-                        else:
-                            raise TQECError("weight-2 stabilizer that is not single type - cannot be!")
-                #--add idling noise--
-                active = self.get_active_qubits_since_last_tick(circuit)
-                current_tick = self.append_tick_with_idle_noise(
-                    circuit,
-                    all_current_qubits,
-                    current_tick,
-                    p_idle,
-                    active)
-                #--measure ancilla both for weight-2 and others--
-                for prism_pipe in prism_pipes_zpm_temp.keys():
-                    zpm = prism_pipes_zpm_temp[prism_pipe]
-                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                    data_positions = prism_pipes_stabs[prism_pipe].positions
-                    #measure stabs if higher weight, and also meas stab if weight=2
-                    for stab in stabs:
-                        print("stab---->", stab.data_qubits)
-                        if len(stab.data_qubits) > 2:
-                            #measurement
-                            if stab.stab_type == "XZ" or stab.stab_type == "X":
-                                label = stab.ancilla[0].label
-                                circuit.append("Z_ERROR", label, p_meas)
-                                circuit.append("MX", label)
-                                meas_rec_lst.append(
-                                    MeasRecInfo(
-                                        meas_type = "MX",
-                                        pipe_prism = prism_pipe,
-                                        stabilizer = stab,
-                                        abs_rec = circuit.num_measurements,
-                                        z_value = z,
-                                        round = r,
-                                        label = label,
-                                        tick = current_tick
-                                        )
-                                    ) #add to record
-                            if stab.stab_type == "XZ" or stab.stab_type == "Z":
-                                label = stab.ancilla[1].label
-                                circuit.append("X_ERROR", label, p_meas)
-                                circuit.append("M", label)
-                                meas_rec_lst.append(
-                                    MeasRecInfo(
-                                        meas_type = "MZ",
-                                        pipe_prism = prism_pipe,
-                                        stabilizer = stab,
-                                        abs_rec = circuit.num_measurements,
-                                        z_value = z,
-                                        round = r,
-                                        label = label,
-                                        tick = current_tick
-                                        )
-                                    ) #add to record
-                        elif len(stab.data_qubits) == 2:
-                            #folded weight-2 stabilizer, perform meas on data qubit
-                            label = stab.data_qubits[1].label
-                            print("measure within fold", label)
-                            if stab.stab_type == "Z":
-                                circuit.append("X_ERROR", label, p_meas)
-                                circuit.append("M", label)
-                                meas_type = "MZ"
-                            elif stab.stab_type == "X":
-                                circuit.append("Z_ERROR", label, p_meas)
-                                circuit.append("MX", label)
-                                meas_type = "MX"
-                            meas_rec_lst.append(
-                                MeasRecInfo(
-                                    meas_type = meas_type,
-                                    pipe_prism = prism_pipe,
-                                    stabilizer = stab,
-                                    abs_rec = circuit.num_measurements,
-                                    z_value = z,
-                                    round = r,
-                                    label = label,
-                                    tick = current_tick
-                                    )
-                                ) #add to record
-                        else:
-                            raise TQECError("weight-2 stabilizer that is not single type - cannot be!")
-                #------add final  weight-2 CNOT gate that expands after folding if no further round available------
-                if r == rounds-1:
-                    flag = False
-                    for prism_pipe in prism_pipes_zpm_temp.keys():
-                        zpm = prism_pipes_zpm_temp[prism_pipe]
-                        stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                        for stab in stabs:
-                            if len(stab.data_qubits) == 2:
-                                flag = True
-                                break
-                    if flag:
-                        print("flag", flag)
-                        #--add idling noise as this has to be its own tick--
-                        active = self.get_active_qubits_since_last_tick(circuit)
-                        current_tick = self.append_tick_with_idle_noise(
-                            circuit,
-                            all_current_qubits,
-                            current_tick,
-                            p_idle,
-                            active)
-                        for prism_pipe in prism_pipes_zpm_temp.keys():
-                            zpm = prism_pipes_zpm_temp[prism_pipe]
-                            stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                            data_positions = prism_pipes_stabs[prism_pipe].positions
-                            for stab in stabs:
-                                if len(stab.data_qubits) == 2:
-                                    lst = [stab.data_qubits[0].label, stab.data_qubits[1].label]
-                                    print("additional layer after last round, defold cnot", lst)
-                                    if stab.stab_type == "X":
-                                        circuit.append("CNOT", lst[::-1])
-                                        circuit.append("DEPOLARIZE2", lst[::-1], p_gate2) #cnot in other direction
-                                    elif stab.stab_type == "Z":
-                                        circuit.append("CNOT", lst)
-                                        circuit.append("DEPOLARIZE2", lst, p_gate2)
-                    #classical feedback. add this in its own layer as it is not assumed to be physical anyways
-                    #important: this must be AFTER folding/unfolding of weight-2 stabilizers, otherwise it may mix them up
-                    for prism_pipe in prism_pipes_zpm_temp.keys():
-                        zpm = prism_pipes_zpm_temp[prism_pipe]
-                        stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                        data_positions = prism_pipes_stabs[prism_pipe].positions
-                        #measure stabs if higher weight, and also meas stab if weight=2
-                        for stab in stabs:
-                            if len(stab.data_qubits) > 2 and stab.stab_type == "XZ": #no classical feedback for single type!
-                                #add classical feedback X^b, find neighboring data to ancilla[1]
-                                #only add classical feedback if actually MZ was done
-                                neighbor_data = [
-                                    qubit for qubit
-                                    in stab.data_qubits # not data_positions as interface qubits are not included then.
-                                    if Position3DHex.rectangular_neighbor(qubit.rect, stab.ancilla[1].rect)
-                                    ]
-                                print("NEIGHBOR DATA FOR CLASSICAL X", [x.label for x in neighbor_data])
-                                rec_current = next(
-                                    m for m in meas_rec_lst
-                                    if m.meas_type == "MZ"
-                                    and m.pipe_prism == prism_pipe
-                                    and m.z_value == z
-                                    and m.stabilizer == stab
-                                    and m.round == r
-                                ).abs_rec - 1 - circuit.num_measurements
-                                print("rec", rec_current + 1 + circuit.num_measurements, rec_current)
-                                for data in neighbor_data:
-                                    circuit.append("CX", [stim.target_rec(rec_current), data.label]) #classical X
-                                    #no error added here because assume that those are classically tracked
-                #if a prism pipe has zpm.m != N then data qubits need to be measured
-                #after final aditional round for weight-2 stabilizer meas
-                for prism_pipe in prism_pipes_zpm_temp.keys():
-                    zpm = prism_pipes_zpm_temp[prism_pipe]
-                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                    data_positions = prism_pipes_stabs[prism_pipe].positions
-                    lst = [data.label for data in data_positions]
-                    if z != max(self.z_values) and r==rounds-1: #if last z values then handled at the end.
-                        if zpm.m == BasisPrism.Z:
-                            print("meas data qubits Z")
-                            circuit.append("X_ERROR", lst, p_meas)
-                            circuit.append("M", lst)
-                            base_rec = circuit.num_measurements - len(lst)
-                            for i, qubit_label in enumerate(lst):
-                                meas_rec_lst.append(
-                                    MeasRecInfo(
-                                        meas_type="MZ",
-                                        pipe_prism = prism_pipe,
-                                        stabilizer = None,
-                                        abs_rec=base_rec + i +1,
-                                        z_value=z,
-                                        round=r,
-                                        label=qubit_label,  # now correctly the individual qubit label
-                                        tick=current_tick
-                                    )
-                                )
-                        elif zpm.m == BasisPrism.X:
-                            print("meas data qubits MX")
-                            circuit.append("Z_ERROR", lst, p_meas)
-                            circuit.append("MX", lst)
-                            base_rec = circuit.num_measurements - len(lst)
-                            print("base_rec", base_rec)
-                            for i, qubit_label in enumerate(lst):
-                                print("i, label, abs rec", i, qubit_label, base_rec + i)
-                                meas_rec_lst.append(
-                                    MeasRecInfo(
-                                        meas_type="MX",
-                                        pipe_prism = prism_pipe,
-                                        stabilizer = None,
-                                        abs_rec=base_rec + i + 1,
-                                        z_value=z,
-                                        round=r,
-                                        label=qubit_label,  # now correctly the individual qubit label
-                                        tick=current_tick
-                                    )
-                                )
-                #--add idling noise--
-                active = self.get_active_qubits_since_last_tick(circuit)
-                current_tick = self.append_tick_with_idle_noise(
-                    circuit,
-                    all_current_qubits,
-                    current_tick,
-                    p_idle,
-                    active)
+                current_tick, meas_rec_lst, circuit = self.build_syndrome_extraction_round(
+                    circuit=circuit,
+                    r=r,
+                    rounds=rounds,
+                    z=z,
+                    prism_pipes_zpm_temp=prism_pipes_zpm_temp,
+                    prism_pipes_stabs=prism_pipes_stabs,
+                    cnot_order=cnot_order,
+                    meas_rec_lst=meas_rec_lst,
+                    p_init=p_init,
+                    p_gate2=p_gate2,
+                    p_meas=p_meas,
+                    p_idle=p_idle,
+                    all_current_qubits=all_current_qubits,
+                    current_tick=current_tick,
+                )
 
-                #---------add detectors based on meas_rec_lst-----------
-                #where did the data qubit measurement take place?
-                meas_rec_lst_data = self.data_meas_rec_lst_pipe_prism(meas_rec_lst, z, rounds)
-                for prism_pipe in prism_pipes_zpm_temp.keys():
-                    zpm = prism_pipes_zpm_temp[prism_pipe]
-                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                    if r == 0:
-                        print("r=0 case")
-                        print("zpm", zpm.m, zpm.p)
-                        #only add those default detectors based on zpm.p
-                        relevant = [] #this must be reset after each run.
-                        if zpm.p == BasisPrism.Z:
-                            relevant = [
-                                m for m in meas_rec_lst
-                                if m.meas_type == "MZ"
-                                and m.pipe_prism == prism_pipe
-                                and m.z_value == z
-                                and m.round == r]
-                        elif zpm.p == BasisPrism.X:
-                            relevant = [
-                                m for m in meas_rec_lst
-                                if m.meas_type == "MX"
-                                and m.pipe_prism == prism_pipe
-                                and m.z_value == z
-                                and m.round == r]
-                        print("relevant", relevant)
-                        for m in relevant:
-                            offset = m.abs_rec -1 - circuit.num_measurements
-                            print("m abs rec", m.abs_rec)
-                            circuit.append("DETECTOR", [stim.target_rec(offset)])
-                        if zpm.p == BasisPrism.N and s != 0:
-                            print("p = N and not s=0")
-                            #IMPORTANT: if basis N, you need to compare to the previous z layer
-                            stabs_temp = [el for el in stabs
-                                          if len(el.data_qubits)!=3
-                                          and len(el.data_qubits)!=5
-                                          and len(el.data_qubits)!=2]
-                            for stab in stabs_temp:
-                                changed_shape = self.stabilizer_changed_shape_bell(z, prism_pipe, stab)
-                                print("changed_shape", changed_shape)
-                                if not changed_shape:
-                                    print("not changed shape")
-                                    #skip the stabilizer if it contains a data qubit which was just re-initialized
-                                    print("initialized_qubits", initialized_qubits)
-                                    print("stab.data_qubits", stab.data_qubits)
-                                    if any(q in initialized_qubits for q in stab.data_qubits):
-                                        print("skipped a double detector")
-                                        continue
-                                    #compare Z stabilizer to previous z layer (stab remained the same)
-                                    print("Z")
-                                    print("stab", stab)
+                # ---------add detectors based on meas_rec_lst-----------
+                circuit = self.add_detector_annotation(
+                    circuit=circuit,
+                    meas_rec_lst=meas_rec_lst,
+                    initialized_qubits=initialized_qubits,
+                    prism_pipes_zpm_temp=prism_pipes_zpm_temp,
+                    prism_pipes_stabs=prism_pipes_stabs,
+                    z=z,
+                    r=r,
+                    rounds=rounds,
+                    s=s,
+                )
 
-                                    rec_current = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MZ"
-                                        and m.pipe_prism == prism_pipe
-                                        and m.z_value == z
-                                        and m.stabilizer == stab
-                                        and m.round == r
-                                    ).abs_rec - 1 - circuit.num_measurements
-                                    target_rects = {pe.rect for pe in stab.data_qubits}
-                                    rec_prev = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MZ"
-                                        and self.pipe_matches(m.pipe_prism, prism_pipe)
-                                        and m.z_value == z - 1
-                                        and m.stabilizer is not None
-                                        and {pe.rect for pe in m.stabilizer.data_qubits} == target_rects
-                                        and m.round == rounds - 1
-                                    ).abs_rec - 1 - circuit.num_measurements
-                                    print("rec current abs", rec_current + 1+ circuit.num_measurements)
-                                    print("rec prev abs", rec_prev + 1+ circuit.num_measurements)
-                                    circuit.append("DETECTOR", [
-                                        stim.target_rec(rec_current), stim.target_rec(rec_prev)])
-                                    #compare X stabilizer to previous z layer (stab remained the same)
-                                    print("X")
-                                    rec_current = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MX"
-                                        and m.pipe_prism == prism_pipe
-                                        and m.z_value == z
-                                        and m.stabilizer == stab
-                                        and m.round == r
-                                    ).abs_rec - 1 - circuit.num_measurements
-                                    target_rects = {pe.rect for pe in stab.data_qubits}
-                                    rec_prev = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MX"
-                                        and self.pipe_matches(m.pipe_prism, prism_pipe)
-                                        and m.z_value == z - 1
-                                        and m.stabilizer is not None
-                                        and {pe.rect for pe in m.stabilizer.data_qubits} == target_rects
-                                        and m.round == rounds - 1
-                                    ).abs_rec - 1 - circuit.num_measurements
-                                    print("rec current abs", rec_current + 1+ circuit.num_measurements)
-                                    print("rec prev abs", rec_prev + 1+ circuit.num_measurements)
-                                    circuit.append("DETECTOR", [
-                                        stim.target_rec(rec_current), stim.target_rec(rec_prev)])
-                                else:
-                                    #if stabilizer changed shape but init and
-                                    # stabilizer are same basis, add trivial detector
-                                    self.add_trivial_detector_changed_shape(
-                                        stab, prism_pipe, prism_pipes_stabs,
-                                        prism_pipes_zpm_temp, meas_rec_lst, circuit, z, r
-                                    )
-                                    #triple detector in basis in which we do not initialize
-                                    # (i.e. stabilizers which can form horizontal cs)
-                                    # e.g. weight-4 in previous layer + current weight-6 and current weight-2
-                                    self.add_triple_detector_changed_shape_merge_opposite(
-                                        stab,
-                                        meas_rec_lst, circuit,
-                                        z, r, rounds)
-                                    #in the same basis as initialization just add double detectors
-                                    self.add_double_detector_changed_shape_merge_same(
-                                        stab,
-                                        meas_rec_lst,
-                                        circuit,
-                                        z,
-                                        r,
-                                        rounds
-                                    )
-                                    if len(meas_rec_lst_data) != 0:
-                                        #triple detector in the basis of data qubit measurements
-                                        #compare former weight-6 with current weight-4 and data meas on location of weight-2
-                                        #but not weight-2 stabilizer because this does not exist in this basis
-                                        #during split
-                                        print("meas rec lst data")
-                                        for m in meas_rec_lst_data:
-                                            print(m.label)
-                                        self.add_triple_detector_changed_shape_split_same(
-                                            stab,
-                                            meas_rec_lst,
-                                            circuit,
-                                            z,
-                                            r,
-                                            rounds,
-                                            meas_rec_lst_data
-                                        )
-                                        #triple detector in the opposite basis
-                                        #compare former weight-6 with former weight-2 and current weight-4
-                                        #during split
-                                        self.add_triple_detector_changed_shape_split_opposite(
-                                            stab,
-                                            meas_rec_lst,
-                                            circuit,
-                                            z,
-                                            r,
-                                            rounds,
-                                            meas_rec_lst_data
-                                        )
-
-
-                    else: #compare this with previous round meas
-                        for stab in stabs:
-                            #==usual double detectors that compare current and previous round==
-                            if stab.stab_type in {"XZ", "Z"}:
-                                # z stabilizer
-                                rec_current = next(
-                                    m for m in meas_rec_lst
-                                    if m.meas_type == "MZ"
-                                    and m.pipe_prism == prism_pipe
-                                    and m.z_value == z
-                                    and m.stabilizer == stab
-                                    and m.round == r
-                                ).abs_rec - 1 - circuit.num_measurements
-
-                                rec_prev = next(
-                                    m for m in meas_rec_lst
-                                    if m.meas_type == "MZ"
-                                    and m.pipe_prism == prism_pipe
-                                    and m.z_value == z
-                                    and m.stabilizer == stab
-                                    and m.round == r - 1
-                                ).abs_rec - 1 - circuit.num_measurements
-
-                                circuit.append("DETECTOR", [
-                                    stim.target_rec(rec_current), stim.target_rec(rec_prev)])
-                            if stab.stab_type in {"XZ", "X"}:
-                                # x stabilizer
-                                rec_current = next(
-                                    m for m in meas_rec_lst
-                                    if m.meas_type == "MX"
-                                    and m.pipe_prism == prism_pipe
-                                    and m.z_value == z
-                                    and m.stabilizer == stab
-                                    and m.round == r
-                                ).abs_rec - 1 -circuit.num_measurements
-
-                                rec_prev = next(
-                                    m for m in meas_rec_lst
-                                    if m.meas_type == "MX"
-                                    and m.pipe_prism == prism_pipe
-                                    and m.z_value == z
-                                    and m.stabilizer == stab
-                                    and m.round == r - 1
-                                ).abs_rec - 1 -circuit.num_measurements
-
-                                circuit.append("DETECTOR", [
-                                    stim.target_rec(rec_current), stim.target_rec(rec_prev)])
-                    #if, not elif because above else should be done nevertheless too.
-                    if r == rounds-1:
-                        #==create detectors for the intermediate measurements==
-                        circuit = self.create_data_measurement_detectors(
-                            prism_pipe, stabs, zpm, meas_rec_lst, circuit, z, r
-                            )
-
-
-            #----------final measurements + OBS--------------
+            # ----------final measurements + OBS--------------
             if z == max(self.z_values):
-                #==final measurements==
-                for prism_pipe in prism_pipes_zpm_temp.keys():
-                    zpm = prism_pipes_zpm_temp[prism_pipe]
-                    stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                    data_positions = prism_pipes_stabs[prism_pipe].positions
-                    if zpm.m == BasisPrism.Z:
-                        for data in data_positions:
-                            label = data.label
-                            circuit.append("X_ERROR", label, p_meas)
-                            circuit.append("M", label)
-                            meas_rec_lst.append(
-                            MeasRecInfo(
-                                meas_type = "MZ",
-                                pipe_prism = prism_pipe,
-                                stabilizer = None,
-                                abs_rec = circuit.num_measurements,
-                                z_value = z,
-                                round = r,
-                                label = label,
-                                tick = current_tick
-                                )
-                            ) #add to record
-                    elif zpm.m == BasisPrism.X:
-                        for data in data_positions:
-                            label = data.label
-                            circuit.append("Z_ERROR", label, p_meas)
-                            circuit.append("MX", label)
-                            meas_rec_lst.append(
-                            MeasRecInfo(
-                                meas_type = "MX",
-                                pipe_prism = prism_pipe,
-                                stabilizer = None,
-                                abs_rec = circuit.num_measurements,
-                                z_value = z,
-                                round = r,
-                                label = label,
-                                tick = current_tick
-                                )
-                            ) #add to record
-                    else:
-                        raise TQECError("The last z requires data measurements in zpm.m")
-
-                for obs_idx, cs in enumerate(cs_lst):
-                    prisms_in_obs = prisms_in_obs_lst[obs_idx]
-                    horizontal_pipes_cs = horizontal_pipes_cs_lst[obs_idx]
-                    if cs is None: #memory experiment case
-                        reachable_via_horizontal = set()
-                    else:
-                        reachable_via_horizontal = self.find_reachable_via_horizontal(cs, prisms_in_obs)
-
-                    print("reachable via horizontal", reachable_via_horizontal)
-                    #==final round of detectors based on stabilizers based on zpm.m==
-                    for prism_pipe in prism_pipes_zpm_temp.keys():
-                        zpm = prism_pipes_zpm_temp[prism_pipe]
-                        stabs = prism_pipes_stabs[prism_pipe].stabilizers
-                        data_positions = prism_pipes_stabs[prism_pipe].positions
-                        circuit = self.create_data_measurement_detectors(
-                            prism_pipe, stabs, zpm, meas_rec_lst, circuit, z, r
-                            )
-                        #==correlation surface for observable==
-                        num_meas = circuit.num_measurements
-                        meas_rec_vertical, meas_rec_horizontal = self.identify_correlation_surface_measurements(horizontal_pipes_cs, meas_rec_lst, num_meas)
-                        print("meas_rec_vertical", meas_rec_vertical)
-                        print("meas_rec_horizontal", meas_rec_horizontal)
-                        #==observable==
-                        star_ops_x, star_ops_z = self.result_dct[z]["star"]
-                        star_ops_x = [[Position3DHex(p.x, p.y, 0) for p in op] for op in star_ops_x]
-                        star_ops_z = [[Position3DHex(p.x, p.y, 0) for p in op] for op in star_ops_z]
-                        #find the star_ops_z that are related to the prisms in prisms_in_obs
-                        involved_data_qubits = []
-                        for prism in prisms_in_obs:
-                            involved_data_qubits += self.mapping_full[z][prism].positions
-                        print("FINAL OBS")
-                        print("prismpipe", prism_pipe)
-                        print("star_ops_x", star_ops_x)
-                        print("star_ops_z", star_ops_z)
-                        #filter both star_ops_x and star_ops_z based on
-                        #the involved data qubits and the current data_positions
-                        data_hex_set = {pe.hex for pe in data_positions if pe.hex is not None}
-                        involved_hex_set = {pe.hex for pe in involved_data_qubits if pe.hex is not None}
-                        print("data_hex_set", data_hex_set)
-                        print("involved hex set", involved_hex_set)
-                        star_ops_z_current = [op for op in star_ops_z
-                                            if set(op) & data_hex_set and set(op) & involved_hex_set]
-                        star_ops_x_current = [op for op in star_ops_x
-                                            if set(op) & data_hex_set and set(op) & involved_hex_set]
-                        print("star ops z current 1", star_ops_z_current)
-                        print("star ops x current 1", star_ops_x_current)
-
-                        #filter star_ops based on whether observable in CS and whether part of current data qubits
-                        data_positions_hex = {el.hex for el in data_positions}
-                        star_ops_z_current = [
-                            [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
-                            for op in star_ops_z_current
-                            if set(op) & data_hex_set and set(op) & data_positions_hex
-                        ]
-
-                        star_ops_x_current = [
-                            [hex_pos for hex_pos in op if hex_pos in data_positions_hex]
-                            for op in star_ops_x_current
-                            if set(op) & data_hex_set and set(op) & data_positions_hex
-                        ]
-
-                        print("star ops z current 2", star_ops_z_current)
-                        print("star ops x current 2", star_ops_x_current)
-
-                        if zpm.m == BasisPrism.Z:
-                            for star_op_z in star_ops_z_current:
-                                print("star_op z", star_op_z)
-                                obs_targets = []
-                                for pos in star_op_z:
-                                    pos_flat = Position3DHex(pos.x, pos.y, 0)
-                                    pe = next(p for p in data_positions if p.hex == pos_flat)
-                                    rec = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MZ"
-                                        and m.z_value == z
-                                        and m.stabilizer is None
-                                        and m.round == r
-                                        and m.label == pe.label
-                                    ).abs_rec - 1 - circuit.num_measurements
-                                    obs_targets.append(stim.target_rec(rec))
-                                    print("rec for obs", rec+circuit.num_measurements)
-                                #add correlation surface measurements if needed!
-                                star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_z}
-                                star_prism_position = next(
-                                    (prism.position for prism in prisms_in_obs
-                                    if any(pe.hex is not None and Position3DHex(pe.hex.x, pe.hex.y, z) in star_op_hex_set
-                                            for pe in self.mapping_full[z][prism].positions)),
-                                    None
-                                )
-                                print("star_prism_position", star_prism_position)
-                                if star_prism_position is not None:
-                                    star_prism_position = Position3DHex(star_prism_position.x, star_prism_position.y, 0)
-                                needs_cs_correction = (
-                                    star_prism_position is not None
-                                    and star_prism_position in reachable_via_horizontal
-                                )
-                                print("needs_cs_correction", needs_cs_correction)
-                                if needs_cs_correction:
-                                    for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
-                                        if key_type == BasisPrism.Z:
-                                            obs_targets += meas_lst
-                                    for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
-                                        if key_type == BasisPrism.Z:
-                                            obs_targets += meas_lst
-                                    circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
-                                elif star_prism_position is not None:
-                                    circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
-                                else:
-                                    continue
-                                print("obs_targets", obs_targets)
-                        elif zpm.m == BasisPrism.X:
-                            for star_op_x in star_ops_x_current:
-                                obs_targets = []
-                                for pos in star_op_x:
-                                    pos_flat = Position3DHex(pos.x, pos.y, 0)
-                                    print("pos flat", pos_flat)
-                                    print("data positions", data_positions)
-                                    pe = next(p for p in data_positions if p.hex == pos_flat)
-                                    rec = next(
-                                        m for m in meas_rec_lst
-                                        if m.meas_type == "MX"
-                                        and m.z_value == z
-                                        and m.stabilizer is None
-                                        and m.round == r
-                                        and m.label == pe.label
-                                    ).abs_rec - 1 - circuit.num_measurements
-                                    obs_targets.append(stim.target_rec(rec))
-                                    print("rec for obs", rec+circuit.num_measurements)
-                                #add correlation surface measurements if needed!
-                                star_op_hex_set = {Position3DHex(p.x, p.y, z) for p in star_op_x}
-                                star_prism_position = next(
-                                    (prism.position for prism in prisms_in_obs
-                                    if any(pe.hex is not None and Position3DHex(pe.hex.x, pe.hex.y, z) in star_op_hex_set
-                                            for pe in self.mapping_full[z][prism].positions)),
-                                    None
-                                )
-                                print("star_prism_position", star_prism_position)
-                                if star_prism_position is not None:
-                                    star_prism_position = Position3DHex(star_prism_position.x, star_prism_position.y, 0)
-                                needs_cs_correction = (
-                                    star_prism_position is not None
-                                    and star_prism_position in reachable_via_horizontal
-                                )
-                                print("needs_cs_correction", needs_cs_correction)
-                                if needs_cs_correction:
-                                    for (key_type, key_pipe), meas_lst in meas_rec_vertical.items():
-                                        if key_type == BasisPrism.X:
-                                            obs_targets += meas_lst
-                                    for (key_type, key_pipe), meas_lst in meas_rec_horizontal.items():
-                                        if key_type == BasisPrism.X:
-                                            obs_targets += meas_lst
-                                    circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
-                                elif star_prism_position is not None:
-                                    circuit.append("OBSERVABLE_INCLUDE", obs_targets, obs_idx)
-                                else:
-                                    continue
-                                print("obs_targets", obs_targets)
+                circuit, meas_rec_lst = self.add_final_meas_and_obs(
+                    circuit=circuit,
+                    meas_rec_lst=meas_rec_lst,
+                    prism_pipes_zpm_temp=prism_pipes_zpm_temp,
+                    prism_pipes_stabs=prism_pipes_stabs,
+                    horizontal_pipes_cs_lst=horizontal_pipes_cs_lst,
+                    prisms_in_obs_lst=prisms_in_obs_lst,
+                    cs_lst=cs_lst,
+                    z=z,
+                    r=r,
+                    current_tick=current_tick,
+                    p_meas=p_meas,
+                )
 
         return circuit, meas_rec_lst
 
@@ -2595,60 +2461,66 @@ class SyndromeExtractionStimCC:
         p_meas: float,
         p_idle: float,
         p_gate2: float,
-        cs_lst: list[CorrelationSurface]
-        ):
+        cs_lst: list[CorrelationSurface],
+    ):
         """Run everything for a superdense circuit."""
         self.retrieve_stabilizers_operators()
         self.reorder_all_stabilizers()
         self.meas_prep_data_qubits()
         _ = self.hex_mapping_to_quadratic()
         circuit, meas_rec_lst = self.create_stim_circuit_bell_multiplexing(
-            rounds = rounds,
-            p_init = p_init,
-            p_meas = p_meas,
-            p_idle = p_idle,
-            p_gate2 = p_gate2,
-            cs_lst = cs_lst
+            rounds=rounds,
+            p_init=p_init,
+            p_meas=p_meas,
+            p_idle=p_idle,
+            p_gate2=p_gate2,
+            cs_lst=cs_lst,
         )
         self.meas_rec_lst = meas_rec_lst
         self.assign_qubit_coords_quadratic()
         circuit = self.add_qubit_coords_to_circuit_quadratic(circuit)
         return circuit
 
+
 decoder_name = "tesseract"
 decoder_dict = tesseract_decoder.make_tesseract_sinter_decoders_dict()
 
+
 def run_experiment_sinter(
-        circuit_builders: list,
-        rounds: list[int],
-        p_values: list[float],
-        num_workers: int = 2,
-        max_shots: int = 10_000,
-        max_errors: int = 100,
-        path: str = "default.csv",
-        add_missing_detectors: bool = False,
-        cs_lst = []#empty
+    circuit_builders: list,
+    rounds: list[int],
+    p_values: list[float],
+    num_workers: int = 2,
+    max_shots: int = 10_000,
+    max_errors: int = 100,
+    path: str = "default.csv",
+    add_missing_detectors: bool = False,
+    cs_lst=[],  # empty
 ) -> list[sinter.TaskStats]:
+    """Run experiments with sinter."""
     tasks = []
     for idx, circuit_builder in enumerate(circuit_builders):
         for p in p_values:
             se_type = "run_all_superdense"
             method = getattr(circuit_builder, se_type)
             circuit = method(
-                rounds=rounds[idx],
-                p_init=p,
-                p_gate2=p,
-                p_meas=p,
-                p_idle=p,
-                cs_lst = cs_lst
+                rounds=rounds[idx], p_init=p, p_gate2=p, p_meas=p, p_idle=p, cs_lst=cs_lst
             )
 
             if add_missing_detectors:
                 circuit = circuit + circuit.missing_detectors(unknown_input=False)
-            tasks.append(sinter.Task(
-                circuit=circuit,
-                json_metadata={'p': p, 'rounds': rounds[idx], 'code_idx': idx, 'd': circuit_builder.d, 'code': 'color_code'},
-            ))
+            tasks.append(
+                sinter.Task(
+                    circuit=circuit,
+                    json_metadata={
+                        "p": p,
+                        "rounds": rounds[idx],
+                        "code_idx": idx,
+                        "d": circuit_builder.d,
+                        "code": "color_code",
+                    },
+                )
+            )
 
     stats = sinter.collect(
         num_workers=num_workers,
@@ -2659,7 +2531,7 @@ def run_experiment_sinter(
         max_errors=max_errors,
         print_progress=True,
         save_resume_filepath=path,
-        count_observable_error_combos=True
+        count_observable_error_combos=True,
     )
     return stats
 
@@ -2680,14 +2552,16 @@ def plot_experiment_sinter(stats: list[sinter.TaskStats], d_lst: list[int]):
     sinter.plot_error_rate(
         ax=ax,
         stats=stats,
-        x_func=lambda stat: stat.json_metadata['p'],
-        group_func=lambda stat: f"d={d_lst[stat.json_metadata['code_idx']]}, r={stat.json_metadata['rounds']}",
+        x_func=lambda stat: stat.json_metadata["p"],
+        group_func=lambda stat: (
+            f"d={d_lst[stat.json_metadata['code_idx']]}, r={stat.json_metadata['rounds']}"
+        ),
     )
     ax.set_xlabel("Physical error rate p")
     ax.set_ylabel("Logical error rate")
     ax.set_title("Logical error rate vs physical error rate")
     ax.loglog()
-    ax.grid(True, which='both', ls='--', alpha=0.5)
+    ax.grid(True, which="both", ls="--", alpha=0.5)
     ax.legend(title="Code distance")
     plt.tight_layout()
     plt.show()

@@ -11,16 +11,16 @@ import collada.source
 import numpy as np
 import numpy.typing as npt
 
-from tqec.computation.prism import BasisPrism, Port, ZXPrism
+from tqec.computation.pipe_prism import PrismPipeKind
+from tqec.computation.prism import BasisPrism, ZXPrism
 from tqec.computation.prism_graph import PrismGraph
-from tqec.computation.pipe_prism import PrismPipe, PrismPipeKind
 from tqec.interop.collada._geometry_prism import (
+    PipeGeometry,
     PrismColor,
     PrismGeometry,
-    PipeGeometry,
     TriangleFace,
-    get_prism_geometry,
     get_horizontal_pipe_geometry,
+    get_prism_geometry,
     get_vertical_pipe_geometry,
 )
 
@@ -38,6 +38,7 @@ _MATERIAL_SYMBOL = "MaterialSymbol"
 # ---------------------------------------------------------------------------
 # Coordinate conversion: Position3DHex → Euclidean 3D
 # ---------------------------------------------------------------------------
+
 
 def _hex_to_euclidean(x: int, y: int, z: int, z_spacing: float) -> tuple[float, float, float]:
     """Convert mhwombat triangular grid (x, y, z) to Euclidean cell_origin (cx, cy, cz).
@@ -62,6 +63,7 @@ def _hex_to_euclidean(x: int, y: int, z: int, z_spacing: float) -> tuple[float, 
 # Library key: identifies a unique prism shape (kind + orientation)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class _PrismLibraryKey:
     """Unique identifier for a prism geometry in the Collada library.
@@ -69,7 +71,9 @@ class _PrismLibraryKey:
     Attributes:
         kind_str:    String representation of the ZXPrism kind, e.g. "XZ".
         pointing_up: True for ▲, False for ▽.
+
     """
+
     kind_str: str
     pointing_up: bool
 
@@ -91,7 +95,9 @@ class _PipeLibraryKey:
         basis:       "X" or "Z".
         pipe_kind:   "vertical_up", "vertical_down", "horizontal_bottom",
                      "horizontal_right", or "horizontal_left".
+
     """
+
     basis: str
     pipe_kind: str
 
@@ -102,6 +108,7 @@ class _PipeLibraryKey:
 # ---------------------------------------------------------------------------
 # _BasePrismColladaData: owns the collada.Collada mesh + all library nodes
 # ---------------------------------------------------------------------------
+
 
 class _BasePrismColladaData:
     """Builds and owns the Collada scene for a PrismGraph.
@@ -192,9 +199,7 @@ class _BasePrismColladaData:
     # Face geometry (triangles only — quads are pre-split)
     # ------------------------------------------------------------------
 
-    def _add_triangle_face_geometry_node(
-        self, face: TriangleFace
-    ) -> collada.scene.GeometryNode:
+    def _add_triangle_face_geometry_node(self, face: TriangleFace) -> collada.scene.GeometryNode:
         """Register a TriangleFace as a Collada geometry and return its node."""
         gid = f"FaceID{self._num_geometries}"
         self._num_geometries += 1
@@ -209,16 +214,10 @@ class _BasePrismColladaData:
             normal = normal / norm_len
         normals_flat = np.tile(normal, 3).astype(np.float64)
 
-        positions_src = collada.source.FloatSource(
-            gid + "_positions", verts_flat, ("X", "Y", "Z")
-        )
-        normals_src = collada.source.FloatSource(
-            gid + "_normals", normals_flat, ("X", "Y", "Z")
-        )
+        positions_src = collada.source.FloatSource(gid + "_positions", verts_flat, ("X", "Y", "Z"))
+        normals_src = collada.source.FloatSource(gid + "_normals", normals_flat, ("X", "Y", "Z"))
 
-        geom = collada.geometry.Geometry(
-            self.mesh, gid, gid, [positions_src, normals_src]
-        )
+        geom = collada.geometry.Geometry(self.mesh, gid, gid, [positions_src, normals_src])
         input_list = collada.source.InputList()
         input_list.addInput(0, "VERTEX", "#" + positions_src.id)
         input_list.addInput(1, "NORMAL", "#" + normals_src.id)
@@ -250,7 +249,7 @@ class _BasePrismColladaData:
         # collect geometry nodes for every triangle face of this prism
         children: list[collada.scene.GeometryNode] = []
         for tri in geometry.all_triangle_faces():
-            children.append(self._add_triangle_face_geometry_node(tri))
+            children.append(self._add_triangle_face_geometry_node(tri))  # noqa: PERF401
 
         node = collada.scene.Node(str(key), children, name=str(key))
         self.mesh.nodes.append(node)
@@ -261,13 +260,11 @@ class _BasePrismColladaData:
     # Pipe library node (cached for vertical; unique per instance for horizontal)
     # ------------------------------------------------------------------
 
-    def _build_pipe_node(
-        self, node_id: str, geometry: PipeGeometry
-    ) -> collada.scene.Node:
+    def _build_pipe_node(self, node_id: str, geometry: PipeGeometry) -> collada.scene.Node:
         """Build a Collada node from a PipeGeometry (not cached)."""
         children: list[collada.scene.GeometryNode] = []
         for tri in geometry.all_triangle_faces():
-            children.append(self._add_triangle_face_geometry_node(tri))
+            children.append(self._add_triangle_face_geometry_node(tri))  # noqa: PERF401
         node = collada.scene.Node(node_id, children, name=node_id)
         self.mesh.nodes.append(node)
         return node
@@ -338,6 +335,7 @@ class _BasePrismColladaData:
 # Helper: basis enum → string for geometry lookup
 # ---------------------------------------------------------------------------
 
+
 def _basis_str(b: BasisPrism) -> str:
     return b.value  # "X", "Z", or "N"
 
@@ -353,7 +351,7 @@ def _scaled_cell_origin(x: int, y: int, scale: float) -> tuple[float, float]:
       ▽ (odd  x): centroid offset from cell_origin = (+0.5, +2h/3)
     """
     h = np.sqrt(3) / 2
-    pointing_up = (x % 2 == 0)
+    pointing_up = x % 2 == 0
     cy_offset = h / 3 if pointing_up else 2 * h / 3
 
     ox = x / 2.0 + (y // 2) * 0.5
@@ -368,6 +366,7 @@ def _scaled_cell_origin(x: int, y: int, scale: float) -> tuple[float, float]:
 # ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
+
 
 def write_prism_graph_to_dae_file(
     prism_graph: PrismGraph,
@@ -389,18 +388,17 @@ def write_prism_graph_to_dae_file(
         file_like:   Output file path or binary file-like object.
         spacing:     Extra gap between adjacent prisms in all directions.
                      Default is 2.0.
+
     """
     base = _BasePrismColladaData()
-
-    h = np.sqrt(3) / 2  # height of unit equilateral triangle
 
     # spacing > 0 adds a uniform gap between adjacent prisms in all directions.
     # xy scaling: centroid-to-centroid = scale = (1 + spacing), so the gap between
     # parallel faces = spacing / sqrt(3) (since centroid-to-face = 1/(2*sqrt(3))).
     # z scaling: to match the horizontal gap, we use z_step = 1 + spacing/sqrt(3),
     # so the z-gap between prisms also equals spacing / sqrt(3).
-    scale  = 1.0 + spacing                    # xy centroid scale factor
-    z_step = 1.0 + spacing / np.sqrt(3)       # z distance between prism origins
+    scale = 1.0 + spacing  # xy centroid scale factor
+    z_step = 1.0 + spacing / np.sqrt(3)  # z distance between prism origins
 
     for position, attrs in prism_graph._graph.nodes(data=True):
         prism = attrs[prism_graph._NODE_DATA_KEY]
@@ -413,7 +411,7 @@ def write_prism_graph_to_dae_file(
         kind: ZXPrism = prism.kind  # type: ignore[assignment]
         x, y, z = position.x, position.y, position.z
 
-        pointing_up = (x % 2 == 0)
+        pointing_up = x % 2 == 0
 
         cell_origin_x, cell_origin_y = _scaled_cell_origin(x, y, scale)
         cell_origin_z = z * z_step
@@ -457,12 +455,12 @@ def write_prism_graph_to_dae_file(
             # the same basis + orientation, translated to position.
             # ----------------------------------------------------------
             z_low = min(pos1.z, pos2.z)
-            x, y  = pos1.x, pos1.y
-            pointing_up = (x % 2 == 0)
+            x, y = pos1.x, pos1.y
+            pointing_up = x % 2 == 0
 
             # Gap spans from top of lower prism to bottom of upper prism
             z_pipe_bottom = z_low * z_step + 1.0
-            z_pipe_top    = (z_low + 1) * z_step
+            z_pipe_top = (z_low + 1) * z_step
 
             geometry = get_vertical_pipe_geometry(
                 hor=hor,
@@ -501,7 +499,7 @@ def write_prism_graph_to_dae_file(
             dy = tri_dn.y - tri_up.y
 
             # Map relative position to edge name (from ▲'s perspective)
-            if   (dx, dy) == (+1, +1):
+            if (dx, dy) == (+1, +1):
                 edge_name = "right"
             elif (dx, dy) == (-1, +1):
                 edge_name = "left"
@@ -514,7 +512,7 @@ def write_prism_graph_to_dae_file(
             ox_scaled, oy_scaled = _scaled_cell_origin(x, y, scale)
 
             z_bottom = z * z_step
-            z_top    = z * z_step + 1.0
+            z_top = z * z_step + 1.0
 
             geometry = get_horizontal_pipe_geometry(
                 hor=hor,
@@ -522,7 +520,7 @@ def write_prism_graph_to_dae_file(
                 edge=edge_name,
                 ox=ox_scaled,
                 oy=oy_scaled,
-                depth=spacing / np.sqrt(3),   # gap between faces = spacing/sqrt(3)
+                depth=spacing / np.sqrt(3),  # gap between faces = spacing/sqrt(3)
                 z_bottom=z_bottom,
                 z_top=z_top,
             )

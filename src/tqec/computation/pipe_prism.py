@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from tqec.computation.prism import BasisPrism, Position3DHex, Prism, ZXPrism
+from tqec.computation.prism import BasisPrism, Prism, ZXPrism
 from tqec.utils.exceptions import TQECError
 
 
@@ -61,20 +61,38 @@ class PrismPipe:
         corresponding to ZXPrism.shift_triangle_direction_a/b/c.
         """
         if self.u.position.x % 2 == 0:
-            if self.u.position.x - self.v.position.x == -1 and self.u.position.y - self.v.position.y == -1:
+            if (
+                self.u.position.x - self.v.position.x == -1
+                and self.u.position.y - self.v.position.y == -1
+            ):
                 return "c"
-            elif self.u.position.x - self.v.position.x == -1 and self.u.position.y - self.v.position.y == 1:
+            elif (
+                self.u.position.x - self.v.position.x == -1
+                and self.u.position.y - self.v.position.y == 1
+            ):
                 return "b"
-            elif self.u.position.x - self.v.position.x == 1 and self.u.position.y - self.v.position.y == -1:
+            elif (
+                self.u.position.x - self.v.position.x == 1
+                and self.u.position.y - self.v.position.y == -1
+            ):
                 return "a"
             else:
                 raise TQECError("something off")
         else:  # noqa: PLR5501
-            if self.u.position.x - self.v.position.x == -1 and self.u.position.y - self.v.position.y == 1:
+            if (
+                self.u.position.x - self.v.position.x == -1
+                and self.u.position.y - self.v.position.y == 1
+            ):
                 return "a"
-            elif self.u.position.x - self.v.position.x == 1 and self.u.position.y - self.v.position.y == -1:
+            elif (
+                self.u.position.x - self.v.position.x == 1
+                and self.u.position.y - self.v.position.y == -1
+            ):
                 return "b"
-            elif self.u.position.x - self.v.position.x == 1 and self.u.position.y - self.v.position.y == 1:
+            elif (
+                self.u.position.x - self.v.position.x == 1
+                and self.u.position.y - self.v.position.y == 1
+            ):
                 return "c"
 
     def single_type_stabilizers_bdry(self, bdry_pair_dir: str):
@@ -89,7 +107,9 @@ class PrismPipe:
         """Create pipe between two given prisms with specific ver/hor basis."""
         if not u.is_zx_prism and not v.is_zx_prism:
             raise TQECError("At least one cube must be a ZX cube to infer the pipe kind.")
-        u, v = (u, v) if u.position.z < v.position.z else (v, u) #!ENOUGH TO THINK ONLY ABOUT TIME ORDERING? 
+        u, v = (
+            (u, v) if u.position.z < v.position.z else (v, u)
+        )  #!ENOUGH TO THINK ONLY ABOUT TIME ORDERING?
         if not u.position.is_neighbour(v.position):
             raise TQECError("The prisms must be neighbours to create a pipe.")
 
@@ -101,16 +121,21 @@ class PrismPipe:
         if hor is not BasisPrism.N and ver is BasisPrism.N:
             raise ValueError("If ver=N also hor must be N.")
 
-        #temporal pipe -> check whether u and v need temporal connection
+        # temporal pipe -> check whether u and v need temporal connection
         if hor is BasisPrism.N and ver is BasisPrism.N:
-            if u.position.x != v.position.x or u.position.y!=v.position.y:
-                raise ValueError("If hor=ver=N, then the pipe must be temporal,i.e. "
-                "is allowed to differ only in pos.Z")
+            if u.position.x != v.position.x or u.position.y != v.position.y:
+                raise ValueError(
+                    "If hor=ver=N, then the pipe must be temporal,i.e. "
+                    "is allowed to differ only in pos.Z"
+                )
         if u.position.z != v.position.z:
             if hor is not BasisPrism.N or ver is not BasisPrism.N:
-                raise ValueError("If temporal pipe (u.position.z!=v.position.z) " \
-                f"the hor=ver=N is necessary. You got hor={hor}, ver={ver}" )
-        #spatial pipe -> check whether u and v need spatial connection + do the meas/prep colors fit?
+                raise ValueError(
+                    "If temporal pipe (u.position.z!=v.position.z) "
+                    f"the hor=ver=N is necessary. You got hor={hor}, ver={ver}"
+                )
+        # spatial pipe -> check whether u and v need spatial connection
+        # + do the meas/prep colors fit?
         elif hor is BasisPrism.X and ver is BasisPrism.Z:
             if u.position.z != v.position.z:
                 raise ValueError("hor=X and ver=Z must be a spatial pipe.")
@@ -118,7 +143,7 @@ class PrismPipe:
             if u.position.z != v.position.z:
                 raise ValueError("hor=Z and ver=X must be a spatial pipe.")
 
-        #make sure that the pipe colors fit the meas/prep colors of the prisms
+        # make sure that the pipe colors fit the meas/prep colors of the prisms
         if kind.is_spatial:
             if isinstance(u.kind, ZXPrism):
                 if u.kind.prep in (BasisPrism.X, BasisPrism.Z) and u.kind.prep != hor:
@@ -132,7 +157,7 @@ class PrismPipe:
                     raise ValueError("meas of v must be same as hor of pipe")
 
         if kind.is_temporal:
-            #v touches pipe with prep face and u touches pipe with meas face. 
+            # v touches pipe with prep face and u touches pipe with meas face.
             # thus these faces should be N
             if isinstance(u.kind, ZXPrism):
                 if u.kind.meas != BasisPrism.N:
@@ -141,8 +166,5 @@ class PrismPipe:
                 if v.kind.prep != BasisPrism.N:
                     raise ValueError("The meas face touching the temporal pipe must be N.")
 
-
-        pipe_kind = PrismPipeKind(hor = hor, ver = ver)
+        pipe_kind = PrismPipeKind(hor=hor, ver=ver)
         return PrismPipe(u, v, pipe_kind)
-
-

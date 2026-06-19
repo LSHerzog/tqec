@@ -1,3 +1,5 @@
+exclude: '.*\.ipynb$|temp-laura/.*|.*\.ipynb_checkpoints/.*'
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

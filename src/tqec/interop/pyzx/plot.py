@@ -31,7 +31,9 @@ def _node_color(g: GraphS, v: int) -> RGBA:  # pragma: no cover
     return TQECColor(str(pauli)).rgba
 
 
-def _positions_array(*positions: Position3D | Position3DHex) -> npt.NDArray[numpy.int_]:  # pragma: no cover
+def _positions_array(
+    *positions: Position3D | Position3DHex,
+) -> npt.NDArray[numpy.int_]:  # pragma: no cover
     if all([isinstance(pos, Position3D) for pos in positions]):
         return numpy.array([astuple(p) for p in positions]).T
     elif all([isinstance(pos, Position3DHex) for pos in positions]):

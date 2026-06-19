@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 import sinter
 
 import tqec.computation.syndrome_extraction_cc as se
@@ -43,9 +42,15 @@ def run_and_plot(
     n_obs = len(cs_cc_lst)
     ks = [(d - 1) / 2 for d in d_lst]
 
-    path_cc = f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_cc.csv"
-    path_sc = f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_sc_correlated.csv"
-    database_path_sc = f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_sc_correlated.pkl"
+    path_cc = (
+        f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_cc.csv"
+    )
+    path_sc = (
+        f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_sc_correlated.csv"
+    )
+    database_path_sc = (
+        f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_sc_correlated.pkl"
+    )
 
     if run_simulation:
         stats_sc = start_simulation_using_sinter(
@@ -112,11 +117,13 @@ def run_and_plot(
         plot_observable_as_inset(ax, zx_cc, cs_cc_lst[obs_idx])
 
         ax.loglog()
-        ax.legend(loc='center right', bbox_to_anchor=(1.0, 0.62))
+        ax.legend(loc="center right", bbox_to_anchor=(1.0, 0.62))
         ax.set_xlabel("Physical Error Rate")
         ax.set_ylabel("Logical Error Rate")
         ax.xaxis.set_major_locator(plt.LogLocator(base=10, numticks=10))
         ax.yaxis.set_major_locator(plt.LogLocator(base=10, numticks=10))
 
-        fig.savefig(f"cnot_error_rate_{tele_type}_{timestamp}_obs{obs_idx}_maxerrors{max_errors}_maxshots{max_shots}.pdf")
+        fig.savefig(
+            f"cnot_error_rate_{tele_type}_{timestamp}_obs{obs_idx}_maxerrors{max_errors}_maxshots{max_shots}.pdf"
+        )
         plt.close(fig)

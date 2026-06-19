@@ -41,15 +41,20 @@ def is_hadamard(g: GraphS, edge: tuple[int, int]) -> bool:
     """Check if an edge in a PyZX graph is a Hadamard edge."""
     return g.edge_type(edge) is EdgeType.HADAMARD
 
-def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[VertexType, FractionLike]:
+
+def prism_kind_to_zx(  # noqa: PLR0911
+    kind: PrismKind, neighbor_pipes: list[PrismPipe]
+) -> tuple[VertexType, FractionLike]:
     """Convert a Prism to corresponding PyZX vertex type and phase.
 
-    Since prisms have no ZX type by themselfes, one needs the corresponding neighboring pipes
+    Since prisms have no ZX type by themselves, one needs the corresponding neighboring pipes
     because the pipe colors determine the zx type of the node
     """
     if isinstance(kind, ZXPrism):
         neighbor_pipes_temporal = [pipe for pipe in neighbor_pipes if pipe.kind.is_temporal]
-        neighbor_pipes_spatial = [pipe for pipe in neighbor_pipes if pipe.kind.is_spatial]#filter spatial pipes, because this is only relevant for spatial pipes
+        neighbor_pipes_spatial = [
+            pipe for pipe in neighbor_pipes if pipe.kind.is_spatial
+        ]  # filter spatial pipes, because this is only relevant for spatial pipes
 
         if len(neighbor_pipes) != 0:
             list_ver = [pipe.kind.ver for pipe in neighbor_pipes]
@@ -84,18 +89,24 @@ def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[
             return VertexType.BOUNDARY, 0
 
         if len(neighbor_pipes_spatial) == 0 and len(neighbor_pipes_temporal) >= 2:
-            #! TEMPORARY, if no spatial pipe, then just choose some color, as it is an identity - but empty would be best
+            #! TEMPORARY, if no spatial pipe, then just choose some color, as it is an identity
+            # but empty would be best
             return VertexType.Z, 0
         elif len(neighbor_pipes_spatial) == 0 and len(neighbor_pipes_temporal) == 1:
-            #this is a boundary prism, i.e. determine the node color depending on its prep or meas face
-            if kind.meas is BasisPrism.X or kind.prep is BasisPrism.X: #other possibilities already ruled out in construction of PipeGraph
+            # this is a boundary prism, i.e. determine the node color
+            # depending on its prep or meas face
+            if (
+                kind.meas is BasisPrism.X or kind.prep is BasisPrism.X
+            ):  # other possibilities already ruled out in construction of PipeGraph
                 return VertexType.Z, 0
-            if kind.meas is BasisPrism.Z or kind.prep is BasisPrism.Z: #other possibilities already ruled out in construction of PipeGraph
+            if (
+                kind.meas is BasisPrism.Z or kind.prep is BasisPrism.Z
+            ):  # other possibilities already ruled out in construction of PipeGraph
                 return VertexType.X, 0
             else:
                 return VertexType.BOUNDARY, 0
 
-        #remove the BasisPrism.N entries since they do not lead to inconsistency
+        # remove the BasisPrism.N entries since they do not lead to inconsistency
         list_ver = [el for el in list_ver if el is not BasisPrism.N]
         list_hor = [el for el in list_hor if el is not BasisPrism.N]
 
@@ -104,21 +115,23 @@ def prism_kind_to_zx(kind: PrismKind, neighbor_pipes: list[PrismPipe]) -> tuple[
         if len(set(list_hor)) > 1:
             raise TQECError("Inconsistent `hor` values of pipes entering the same prism.")
 
-        if len(set(list_ver))> 0 and len(set(list_hor))>0:
+        if len(set(list_ver)) > 0 and len(set(list_hor)) > 0:
             if list_hor[0] == BasisPrism.X and list_ver[0] == BasisPrism.Z:
                 return VertexType.Z, 0
             elif list_hor[0] == BasisPrism.Z and list_ver[0] == BasisPrism.X:
                 return VertexType.X, 0
             else:
                 raise TQECError("Invalid Pipe Configuration.")
-        else: #if meas/prep not handled above then boundary.
+        else:  # if meas/prep not handled above then boundary.
             return VertexType.BOUNDARY, 0
-    #import here to avoid overlapping Port imports for block and prism
+    # import here to avoid overlapping Port imports for block and prism
     from tqec.computation.prism import Port  # noqa: PLC0415
+
     if isinstance(kind, Port):
         return VertexType.BOUNDARY, 0
     else:
         raise NotImplementedError(f"type {kind} not implemented yet.")
+
 
 def cube_kind_to_zx(kind: CubeKind) -> tuple[VertexType, FractionLike]:
     """Convert the cube kind to the corresponding PyZX vertex type and phase.

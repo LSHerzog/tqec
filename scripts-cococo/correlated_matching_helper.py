@@ -1,8 +1,10 @@
 import math
+
 import numpy as np
 import pymatching
 import sinter
 import stim
+
 
 class CorrelatedPyMatchingDecoder(sinter.Decoder):
     def decode_via_files(
@@ -16,10 +18,9 @@ class CorrelatedPyMatchingDecoder(sinter.Decoder):
         obs_predictions_b8_out_path,
         tmp_dir,
     ):
+        """Decode via Correlated PyMatching."""
         dem = stim.DetectorErrorModel.from_file(dem_path)
-        matching = pymatching.Matching.from_detector_error_model(
-            dem, enable_correlations=True
-        )
+        matching = pymatching.Matching.from_detector_error_model(dem, enable_correlations=True)
 
         # Read bit-packed detectors: shape (num_shots, ceil(num_dets/8))
         num_det_bytes = math.ceil(num_dets / 8)
@@ -40,6 +41,8 @@ class CorrelatedPyMatchingDecoder(sinter.Decoder):
         pad = num_obs_bytes * 8 - num_obs
         if pad > 0:
             predictions_bool = np.pad(predictions_bool, ((0, 0), (0, pad)))
-        packed = np.packbits(predictions_bool, axis=1, bitorder="little")  # (num_shots, num_obs_bytes)
+        packed = np.packbits(
+            predictions_bool, axis=1, bitorder="little"
+        )  # (num_shots, num_obs_bytes)
 
         packed.tofile(obs_predictions_b8_out_path)

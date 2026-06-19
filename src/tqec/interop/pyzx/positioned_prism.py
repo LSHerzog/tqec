@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from fractions import Fraction
 from typing import TYPE_CHECKING
 
 from pyzx.graph.graph_s import GraphS
-from pyzx.utils import EdgeType, VertexType
+from pyzx.utils import EdgeType
 
 from tqec.computation.pipe_prism import PrismPipe
 from tqec.computation.prism import Position3DHex, Prism
 from tqec.computation.prism_graph import PrismGraph
 from tqec.interop.pyzx.utils import prism_kind_to_zx
-from tqec.utils.exceptions import TQECError
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
     from mpl_toolkits.mplot3d.axes3d import Axes3D
+
 
 class PositionedHexZX:
     def __init__(self, g: GraphS, positions: Mapping[int, Position3DHex]):
@@ -29,6 +28,7 @@ class PositionedHexZX:
 
     @staticmethod
     def check_preconditions(g: GraphS, positions: Mapping[int, Position3DHex]) -> None:
+        """To do."""
         pass
 
     @property
@@ -61,7 +61,7 @@ class PositionedHexZX:
         p2v: dict[Position3DHex, int] = {}
         g = GraphS()
 
-        for prism in prism_graph.prisms:#sorted(prism_graph.prisms, key=lambda c: c.position):
+        for prism in prism_graph.prisms:  # sorted(prism_graph.prisms, key=lambda c: c.position):
             neighbor_pipes = PositionedHexZX.outgoing_pipes_from_prism(prism, prism_graph)
             vt, phase = prism_kind_to_zx(prism.kind, neighbor_pipes)
             v = g.add_vertex(vt, phase=phase)

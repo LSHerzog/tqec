@@ -1,8 +1,7 @@
-import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-import mqt.qecc
 import numpy as np
+from matplotlib import cm
 from matplotlib.patches import Polygon
 
 from tqec.computation.prism import Position3DHex
@@ -41,12 +40,12 @@ def build_check_matrix(
 def check_logical_operator(xl, hz):
     """Check whether given logical operator commutes with given stabilizers.
 
-    Important: for a Z logical operator, check the X stabilizers and vice versa. 
+    Important: for a Z logical operator, check the X stabilizers and vice versa.
     """
     values = []
     for i in range(np.shape(hz)[0]):
         stab = hz[i,:]
-        res = (stab @ xl[0])%2 
+        res = (stab @ xl[0])%2
         values.append(res)
     if np.sum(values) == 0.0:
         return True
@@ -54,7 +53,7 @@ def check_logical_operator(xl, hz):
         return False
 
 
-def plot_position_dict(
+def plot_position_dict(  # noqa: D417
     *,
     size,
     bdry: dict[str, list] | None = None,
@@ -66,12 +65,14 @@ def plot_position_dict(
     """Plot Position3DHex positions using their to_euclidean coords.
 
     Args:
-        bdry:        dict[str, list[Position3DHex]] — each key is a label, plotted as scattered dots.
+        bdry:        dict[str, list[Position3DHex]] — each key is a label, plotted as
+                        scattered dots.
         stabilizers: list[list[Position3DHex]] — each inner list plotted with its own color,
                      dots at each position and a filled polygon connecting them.
         star_op:     list[Position3DHex] — plotted as black crosses.
+
     """
-    fig, ax = plt.subplots(figsize=size)
+    _, ax = plt.subplots(figsize=size)
     n_bdry        = len(bdry)        if bdry        is not None else 0
     n_stabilizers = len(stabilizers) if stabilizers is not None else 0
     n_total = n_bdry + n_stabilizers
@@ -109,7 +110,7 @@ def plot_position_dict(
             if len(positions) == 2:
                 color = "black"
             else:
-                color = rainbow(color_idx); color_idx += 1
+                color = rainbow(color_idx); color_idx += 1  # noqa: E702
             xs = [p.to_euclidean()[0] for p in positions]
             ys = [p.to_euclidean()[1] for p in positions]
             poly = Polygon(list(zip(xs, ys)), closed=True,
@@ -147,7 +148,7 @@ def plot_position_dict(
 
     if bdry is not None:
         for label, positions in bdry.items():
-            color = rainbow(color_idx); color_idx += 1
+            color = rainbow(color_idx); color_idx += 1  # noqa: E702
             xs = [p.to_euclidean()[0] for p in positions]
             ys = [p.to_euclidean()[1] for p in positions]
             ax.scatter(xs, ys, color=color, label=label, s=80, zorder=3)
@@ -182,7 +183,7 @@ def plot_position_dict_3color(
     show_positions: bool = False,
 ) -> plt.Figure:
     """Plot Position3DHex positions using their to_euclidean coords."""
-    fig, ax = plt.subplots(figsize=size)
+    _, ax = plt.subplots(figsize=size)
     for positions, color in color_assignment.items():
         if not positions:
             continue
@@ -250,13 +251,14 @@ def plot_position_dict_3color(
 
 #----------plotting for rectangular coords------------
 def sort_by_angle(points):
+    """Sort positions for plaquette plots."""
     cx = sum(p[0] for p in points) / len(points)
     cy = sum(p[1] for p in points) / len(points)
     return sorted(points, key=lambda p: np.arctan2(p[1] - cy, p[0] - cx))
 
-def plot_mapping_full(mapping_full, z):
-
-    fig, ax = plt.subplots(figsize=(12, 8))
+def plot_mapping_full(mapping_full, z, size = (12,8)):
+    """Plot the mapping on the rectangular grid."""
+    _, ax = plt.subplots(figsize=size)
 
     all_stab_infos = []
     for prism_data in mapping_full[z].values():
@@ -286,7 +288,9 @@ def plot_mapping_full(mapping_full, z):
             rx, ry = pe.rect
             ax.scatter(rx, ry, color='blue', s=80, zorder=3)
             txt = f"h({pe.hex.x},{pe.hex.y})\nr{pe.rect}\n#{pe.label}"
-            ax.annotate(txt, (rx, ry), xytext=(4, 4), textcoords='offset points', fontsize=6, color='blue')
+            ax.annotate(
+                txt, (rx, ry), xytext=(4, 4), textcoords='offset points', fontsize=6, color='blue'
+                )
 
     # plot ancillas
     # plot ancillas
@@ -294,11 +298,17 @@ def plot_mapping_full(mapping_full, z):
         if prism_data.stabilizers:
             for stab_info in prism_data.stabilizers:
                 if stab_info.ancilla:
-                    for anc in stab_info.ancilla:
-                        rx, ry = anc.rect
+                    for ancilla in stab_info.ancilla:
+                        rx, ry = ancilla.rect
                         ax.scatter(rx, ry, color='red', s=100, zorder=4, marker='*')
-                        txt = f"r{anc.rect}\n#{anc.label}"
-                        ax.annotate(txt, (rx, ry), xytext=(4, 4), textcoords='offset points', fontsize=6, color='red')
+                        txt = f"r{ancilla.rect}\n#{ancilla.label}"
+                        ax.annotate(
+                            txt, (rx, ry),
+                            xytext=(4, 4),
+                            textcoords='offset points',
+                            fontsize=6,
+                            color='red'
+                            )
 
     ax.set_aspect('equal')
     ax.grid(True)
