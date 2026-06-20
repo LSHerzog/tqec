@@ -18,7 +18,7 @@ from sim_helper import run_and_plot
 
 from tqec.interop.pyzx.plot import draw_correlation_surface_on, draw_positioned_zx_graph_on
 
-tele_type = "a_b"  #!ADAPT FOR CORRECT PATHS
+tele_type = "c_d"  #!ADAPT FOR CORRECT PATHS
 
 # =============================color code================================
 

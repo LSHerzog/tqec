@@ -11,8 +11,11 @@ from tqec.utils.position import Position3D
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import correlated_matching_helper
+import matplotlib.pyplot as plt
 import numpy as np
 from sim_helper import run_and_plot
+
+from tqec.interop.pyzx.plot import draw_correlation_surface_on, draw_positioned_zx_graph_on
 
 tele_type = "a"
 
@@ -42,6 +45,14 @@ g.add_pipe(prisms[2][0], prisms[3][0], pipe_kind)
 cs_cc_lst = g.find_correlation_surfaces()
 zx_cc = g.to_zx_graph()
 
+# plot the CS in the ZX diagram
+for cs_idx, cs_cc in enumerate(cs_cc_lst):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    draw_positioned_zx_graph_on(zx_cc, ax, node_size=100)
+    draw_correlation_surface_on(cs_cc, zx_cc, ax)
+    fig.savefig(f"correlation_surface_zx_cc_{tele_type}_{cs_idx}.pdf")
+
 # =============================surface code================================
 g_sc = BlockGraph("Teleportation")
 cubes = [
@@ -68,6 +79,15 @@ for p0, p1 in pipes:
     g_sc.add_pipe(cubes[p0][0], cubes[p1][0])
 
 cs_sc_lst = g_sc.find_correlation_surfaces()
+zx_sc = g_sc.to_zx_graph()
+
+# plot SC CS
+for cs_idx, cs_sc in enumerate(cs_sc_lst):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    draw_positioned_zx_graph_on(zx_sc, ax, node_size=100)
+    draw_correlation_surface_on(cs_sc, zx_sc, ax)
+    fig.savefig(f"correlation_surface_zx_sc_{tele_type}_{cs_idx}.pdf")
 
 
 timestamp = datetime.now().strftime("%y%m%d_%H%M%S")

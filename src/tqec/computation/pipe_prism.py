@@ -94,6 +94,8 @@ class PrismPipe:
                 and self.u.position.y - self.v.position.y == 1
             ):
                 return "c"
+            else:
+                raise TQECError("something is off.")
 
     def single_type_stabilizers_bdry(self, bdry_pair_dir: str):
         """Generate single type stabilizers along a given bdry.

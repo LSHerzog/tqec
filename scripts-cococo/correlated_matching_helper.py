@@ -34,6 +34,9 @@ class CorrelatedPyMatchingDecoder(sinter.Decoder):
         predictions = matching.decode_batch(dets, enable_correlations=True)
         # predictions shape: (num_shots, num_obs), dtype uint8 or bool
 
+        if isinstance(predictions, tuple):
+            raise TypeError("Expected a single numpy array from decode_batch, but got a tuple.")
+
         # Pack predictions per shot: shape (num_shots, ceil(num_obs/8))
         num_obs_bytes = math.ceil(num_obs / 8)
         predictions_bool = predictions.astype(np.bool_)

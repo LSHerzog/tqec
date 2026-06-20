@@ -26,7 +26,7 @@ def translate_stabilizers(
 def build_check_matrix(
     encoded_stabilizers: list[list[int]],
     n_positions: int,
-) -> list[list[int]]:
+) -> np.ndarray:
     """Build a check matrix from encoded stabilizers.
 
     Rows correspond to stabilizers, columns to positions.
@@ -63,7 +63,7 @@ def plot_position_dict(  # noqa: D417
     star_op: list[list] | None = None,
     mapping: dict | None = None,
     mapping_ancillas: dict[tuple, int] | None = None,
-) -> plt.Figure:
+) -> None:
     """Plot Position3DHex positions using their to_euclidean coords.
 
     Args:
@@ -79,8 +79,8 @@ def plot_position_dict(  # noqa: D417
     n_stabilizers = len(stabilizers) if stabilizers is not None else 0
     n_total = n_bdry + n_stabilizers
 
-    def rainbow(i: int) -> tuple:
-        return cm.rainbow(i / max(n_total - 1, 1))
+    def rainbow(i: int):
+        return plt.colormaps["rainbow"](i / max(n_total - 1, 1))
 
     ancilla_lookup = None
     if mapping_ancillas is not None:
@@ -167,7 +167,7 @@ def plot_position_dict(  # noqa: D417
                 )
 
     if star_op is not None:
-        colors = plt.cm.tab10.colors  # or any colormap with enough distinct colors
+        colors = [rainbow(color_idx) for color_idx in range(len(star_op))]#plt.colormaps["tab10"].colors
         for k, op in enumerate(star_op):
             xs = [p.to_euclidean()[0] for p in op]
             ys = [p.to_euclidean()[1] for p in op]
@@ -192,7 +192,7 @@ def plot_position_dict_3color(
     stabilizer_product: list[list[Position3DHex]] | None = None,
     star_operators=None,
     show_positions: bool = False,
-) -> plt.Figure:
+) -> None:
     """Plot Position3DHex positions using their to_euclidean coords."""
     _, ax = plt.subplots(figsize=size)
     for positions, color in color_assignment.items():
@@ -294,7 +294,7 @@ def plot_mapping_full(mapping_full, z, size=(12, 8)):
     n_stabs = len(all_stab_infos)
 
     def rainbow(i):
-        return cm.rainbow(i / max(n_stabs - 1, 1))
+        return plt.colormaps["rainbow"](i / max(n_stabs - 1, 1))
 
     # plot stabilizer faces
     for i, stab_info in enumerate(all_stab_infos):

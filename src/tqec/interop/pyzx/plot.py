@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import astuple
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import matplotlib.pyplot as plt
 import numpy
@@ -17,8 +17,10 @@ from pyzx.pauliweb import PauliWeb
 from tqec.computation.prism import Position3DHex
 from tqec.interop.color import RGBA, TQECColor
 from tqec.interop.pyzx.positioned import PositionedZX
+from tqec.interop.pyzx.positioned_prism import PositionedHexZX
 from tqec.interop.pyzx.utils import is_boundary, is_hadamard, zx_to_pauli
 from tqec.utils.enums import Pauli
+from tqec.utils.exceptions import TQECError
 from tqec.utils.position import Position3D
 
 if TYPE_CHECKING:
@@ -37,13 +39,13 @@ def _positions_array(
     if all([isinstance(pos, Position3D) for pos in positions]):
         return numpy.array([astuple(p) for p in positions]).T
     elif all([isinstance(pos, Position3DHex) for pos in positions]):
-        return numpy.array([pos.to_euclidean() for pos in positions]).T
+        return numpy.array([cast(Position3DHex, pos).to_euclidean() for pos in positions]).T
     else:
-        raise TQECColor("No mixing up of Position3D and Position3DHex is allowed.")
+        raise TQECError("No mixing up of Position3D and Position3DHex is allowed.")
 
 
 def draw_positioned_zx_graph_on(
-    graph: PositionedZX,
+    graph: PositionedZX | PositionedHexZX,
     ax: Axes3D,
     *,
     node_size: int = 400,
@@ -105,7 +107,7 @@ def draw_positioned_zx_graph_on(
 
 def draw_correlation_surface_on(
     correlation_surface: CorrelationSurface,
-    graph: PositionedZX,
+    graph: PositionedZX | PositionedHexZX,
     ax: Axes3D,
     correlation_edge_width: int = 3,
 ) -> None:
@@ -137,7 +139,7 @@ def draw_correlation_surface_on(
 
 
 def plot_positioned_zx_graph(
-    graph: PositionedZX,
+    graph: PositionedZX | PositionedHexZX,
     *,
     figsize: tuple[float, float] = (5, 6),
     title: str | None = None,

@@ -15,18 +15,16 @@ from tqec.utils.exceptions import TQECError
 
 
 @dataclass(frozen=True, order=True)
-class Vec3DHex:
-    x: int
-    y: int
-    z: int
-
-
-class Position3DHex(Vec3DHex):
+class Position3DHex:
     """A 3D position for 3d space based on hex lattice."""
 
     x: int
     y: int
     z: int
+
+    def as_tuple(self) -> tuple[int, int, int]:
+        """Return coordinates as (x, y, z) tuple."""
+        return (self.x, self.y, self.z)
 
     def distance_spatial(self, other: Position3DHex) -> int:
         """Determine distance between two positions."""
@@ -616,7 +614,7 @@ class ZXPrism:
     @staticmethod
     def patch_stabilizers(
         d: int, triangle_type: str, left_corner: Position3DHex, reduce_bdry: list[str]
-    ) -> tuple[list[list[Position3DHex]]]:
+    ) -> tuple[list[list[Position3DHex]], dict[str, list[Position3DHex]]]:
         """Create patch stabilizers for a single patch.
 
         Since the stabilizers are self-dual if no merge is performed, this returns a single list
@@ -929,7 +927,7 @@ class Port:
         return isinstance(other, Port)
 
 
-PrismKind = ZXPrism | Port
+PrismKind = ZXPrism | Port | str
 
 
 def prism_kind_from_string(s: str) -> PrismKind:

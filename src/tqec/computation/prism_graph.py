@@ -433,7 +433,13 @@ class PrismGraph:
 
     def stabilizers_timeslice(
         self, z: int, d: int
-    ) -> tuple[list[list[Position3DHex]], list[list[Position3DHex]]]:
+    ) -> tuple[
+        list[list[Position3DHex]],
+        list[list[Position3DHex]],
+        list[list[Position3DHex]],
+        dict[PrismPipe, list[list[Position3DHex]]],
+        dict[Prism, list[list[Position3DHex]]],
+        ]:
         """Build the stabilizers of a given time slice and given distance d."""
         # filter prism and horizontal pipes of some given time slice
         current_prisms = []
@@ -462,7 +468,7 @@ class PrismGraph:
         # collect all nodes_triangle_bdry for each prism, in same order as current_prisms
         prism_bdries = {}
         prism_bdries_filtered = []
-        dct_patch_stabilizers = {}
+        dct_patch_stabilizers: dict[Prism, list[list[Position3DHex]]] = {}
         for prism, left_corner in zip(current_prisms, left_corner_lst):
             # is the prism end of a pipe?
             pipes_dirs = []
@@ -494,8 +500,7 @@ class PrismGraph:
         all_weight_2_stabs = ZXPrism.find_pairs_with_two_overlaps(stabilizers)
 
         # generate the weight-3,-5,-6 stabilizers per pipe and store info about which pipe
-        dct_single_type_stabs = {}
-
+        dct_single_type_stabs: dict[PrismPipe, list[list[Position3DHex]]] = {}
         #!TODO also sort the weight 2 stabs here into correct lists.
 
         for pipe in current_pipes:
@@ -726,7 +731,7 @@ class PrismGraph:
 
         return assignment
 
-    def find_all_linear_paths_timeslice(self, z: int) -> list[list[PrismPipe]]:
+    def find_all_linear_paths_timeslice(self, z: int) -> list[list[Position3DHex]]:
         """Find all simple linear paths through the prism graph restricted to a fixed z slice."""
         # Restrict to nodes in the given z-slice
         nodes_in_slice = [n for n in self._graph.nodes() if n.z == z]
@@ -739,7 +744,7 @@ class PrismGraph:
         if not endpoints:
             endpoints = list(subgraph.nodes())
 
-        all_paths: list[list[PrismPipe]] = []
+        all_paths: list[list[Position3DHex]] = []
 
         for source in endpoints:
             for target in endpoints:

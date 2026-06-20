@@ -40,7 +40,7 @@ def run_and_plot(
     """Run and plot simulations."""
     assert len(cs_sc_lst) == len(cs_cc_lst), "same operators have to be applied on both codes."
     n_obs = len(cs_cc_lst)
-    ks = [(d - 1) / 2 for d in d_lst]
+    ks = [(d - 1) // 2 for d in d_lst]
 
     path_cc = (
         f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_cc.csv"
