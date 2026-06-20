@@ -46,10 +46,12 @@ def run_and_plot(
         f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_cc.csv"
     )
     path_sc = (
-        f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_sc_correlated.csv"
+        f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}"
+        f"_maxerrors{max_errors}_sc_correlated.csv"
     )
     database_path_sc = (
-        f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}_maxerrors{max_errors}_sc_correlated.pkl"
+        f"cnot_sinter_{tele_type}_{timestamp}_maxshots{max_shots}"
+        f"_maxerrors{max_errors}_sc_correlated.pkl"
     )
 
     if run_simulation:

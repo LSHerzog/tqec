@@ -491,7 +491,9 @@ class SyndromeExtractionStimCC:
 
             for stab_info in stabilizers:
                 # assign labels to data qubits in stab_info from seen
-                for pe in stab_info.data_qubits or []: #empty list in case the stabinfo entry isNone
+                for pe in (
+                    stab_info.data_qubits or []
+                ):  # empty list in case the stabinfo entry isNone
                     if pe.rect in rect_to_entry:
                         pe.label = rect_to_entry[pe.rect].label
 
@@ -506,7 +508,9 @@ class SyndromeExtractionStimCC:
                             seen_ancillas[anc_pe.rect] = anc_pe
 
                 # find which prism/pipe this stabilizer belongs to by overlap
-                stab_rects = {pe.rect for pe in (stab_info.data_qubits or [])} #[] to make ty happy
+                stab_rects = {
+                    pe.rect for pe in (stab_info.data_qubits or [])
+                }  # [] to make ty happy
                 best_match = None
                 best_overlap = 0
                 for pipe_prism, prism_data in mapping_full[z].items():
@@ -517,7 +521,7 @@ class SyndromeExtractionStimCC:
                         best_match = pipe_prism
                 if best_match is not None:
                     prism_data = mapping_full[z][best_match]
-                    if prism_data.stabilizers is None: #to make ty happy
+                    if prism_data.stabilizers is None:  # to make ty happy
                         prism_data.stabilizers = []
                     prism_data.stabilizers.append(stab_info)
 
@@ -533,7 +537,9 @@ class SyndromeExtractionStimCC:
         active_qubits: set[int],
     ) -> int:
         """Append idle noise and TICK to circuit."""
-        all_qubits = {pe.label for pe in all_current_qubits if pe.label is not None} # make ty happy
+        all_qubits = {
+            pe.label for pe in all_current_qubits if pe.label is not None
+        }  # make ty happy
         idle = all_qubits - active_qubits
         if idle:
             circuit.append("DEPOLARIZE1", list(idle), p_idle)
@@ -545,7 +551,7 @@ class SyndromeExtractionStimCC:
         """Get all qubit labels that had a gate since the last TICK."""
         active = set()
         for instruction in reversed(circuit):
-            if isinstance(instruction, stim.CircuitRepeatBlock): # because ty
+            if isinstance(instruction, stim.CircuitRepeatBlock):  # because ty
                 raise TQECError(
                     "Encountered an unexpected stim.CircuitRepeatBlock while scanning "
                     "backward for the last TICK. Circuit loops are not expected within the "
@@ -621,7 +627,7 @@ class SyndromeExtractionStimCC:
                     k
                     for k in prism_pipes_stabs_previous
                     if isinstance(k, Prism)
-                    and isinstance(prism_pipe_previous, Prism) #this has to be added for ty
+                    and isinstance(prism_pipe_previous, Prism)  # this has to be added for ty
                     and k.position == prism_pipe_previous.position
                 ),
                 None,
@@ -632,13 +638,13 @@ class SyndromeExtractionStimCC:
                     k
                     for k in prism_pipes_stabs_previous
                     if isinstance(k, PrismPipe)
-                    and isinstance(prism_pipe_previous, PrismPipe) #ty
+                    and isinstance(prism_pipe_previous, PrismPipe)  # ty
                     and k.u.position == prism_pipe_previous.u.position
                     and k.v.position == prism_pipe_previous.v.position
                 ),
                 None,
             )
-        if matching_key is not None: #ty
+        if matching_key is not None:  # ty
             stabs_previous = prism_pipes_stabs_previous[matching_key].stabilizers
         else:
             stabs_previous = None
@@ -664,7 +670,7 @@ class SyndromeExtractionStimCC:
             return True
 
         # compare data qubit support via rect tuples
-        current_data_rects = {pe.rect for pe in stab.data_qubits or []} #[] becaues ty
+        current_data_rects = {pe.rect for pe in stab.data_qubits or []}  # [] because ty
         prev_data_rects = {pe.rect for pe in matching_prev_stab.data_qubits or []}
 
         return current_data_rects != prev_data_rects
@@ -689,10 +695,11 @@ class SyndromeExtractionStimCC:
         self,
         horizontal_pipes_cs: dict[PrismPipe, tuple[BasisPrism, str]],
         meas_rec_lst: list[MeasRecInfo],
-        num_meas: int
+        num_meas: int,
     ) -> tuple[
         dict[tuple[BasisPrism, PrismPipe], list[stim.GateTarget]],
-        dict[tuple[BasisPrism, PrismPipe], list[stim.GateTarget]]]:
+        dict[tuple[BasisPrism, PrismPipe], list[stim.GateTarget]],
+    ]:
         """Identify measurements that belong to a correlation surface."""
         # vertical correlation surface
         meas_rec_vertical: dict[tuple[BasisPrism, PrismPipe], list[stim.GateTarget]] = {}
@@ -805,7 +812,7 @@ class SyndromeExtractionStimCC:
                                 if m.meas_type == meas_type
                                 and m.stabilizer is not None
                                 and m.z_value == z_value
-                                and m.stabilizer.data_qubits is not None #ty
+                                and m.stabilizer.data_qubits is not None  # ty
                                 and {
                                     Position3DHex(pe.hex.x, pe.hex.y, 0)
                                     for pe in m.stabilizer.data_qubits
@@ -842,7 +849,7 @@ class SyndromeExtractionStimCC:
         z: int,
         r: int,
         rounds: int,
-        meas_rec_lst_data: list[MeasRecInfo]
+        meas_rec_lst_data: list[MeasRecInfo],
     ) -> None:
         """Add `triple` detector after split with the opposite basis as the data qubit meas.
 
@@ -856,7 +863,7 @@ class SyndromeExtractionStimCC:
         # for this we first need to find the previous weight-6 labels
         flag = False
         labels_weight6 = None
-        stab_set_label = {el.label for el in (stab.data_qubits or [])}#ty
+        stab_set_label = {el.label for el in (stab.data_qubits or [])}  # ty
         if len(stab_set_label) == 3 or len(stab_set_label) == 5:
             return  # no search if we have weight-3 because those are single type stabilizers
         # but also single type weight-6 operators have to be excluded! this problem occurs only
@@ -865,15 +872,15 @@ class SyndromeExtractionStimCC:
             return
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
-            for stab_temp in (stabs or []):#ty
-                stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}#[] ty
+            for stab_temp in stabs or []:  # ty
+                stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}  # [] ty
                 if len(stab_temp_labels & stab_set_label) == 4:
                     labels_weight6 = stab_temp_labels
                     flag = True
                     break
             if flag:
                 break
-        neighbor_meas = [m for m in meas_rec_lst_data if m.label in (labels_weight6 or [])] #ty
+        neighbor_meas = [m for m in meas_rec_lst_data if m.label in (labels_weight6 or [])]  # ty
         if len(neighbor_meas) == 0:
             return
 
@@ -907,7 +914,7 @@ class SyndromeExtractionStimCC:
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
-            for stab_temp in (stabs or []):#ty
+            for stab_temp in stabs or []:  # ty
                 stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}
                 if len(stab_temp_labels & stab_set_label) == 4:
                     rec = (
@@ -932,10 +939,12 @@ class SyndromeExtractionStimCC:
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
-            for stab_temp in (stabs or []):
+            for stab_temp in stabs or []:
                 stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}
-                if (len(stab_temp_labels & (labels_weight6 or set())) == 2
-                    and len(stab_temp_labels) == 2):
+                if (
+                    len(stab_temp_labels & (labels_weight6 or set())) == 2
+                    and len(stab_temp_labels) == 2
+                ):
                     rec = (
                         next(
                             m
@@ -964,7 +973,7 @@ class SyndromeExtractionStimCC:
         z: int,
         r: int,
         rounds: int,
-        meas_rec_lst_data: list[MeasRecInfo]
+        meas_rec_lst_data: list[MeasRecInfo],
     ) -> None:
         """Add `triple` detector after split with the same basis as the data qubit meas.
 
@@ -981,7 +990,7 @@ class SyndromeExtractionStimCC:
         # for this we first need to find the previous weight-6 labels
         flag = False
         labels_weight6 = None
-        stab_set_label = {el.label for el in (stab.data_qubits or [])}#ty
+        stab_set_label = {el.label for el in (stab.data_qubits or [])}  # ty
         if len(stab_set_label) == 3 or len(stab_set_label) == 5:
             return  # no search if we have weight-3 because those are single type stabilizers
         # but also single type weight-6 operators have to be excluded! this problem occurs only
@@ -990,7 +999,7 @@ class SyndromeExtractionStimCC:
             return
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
-            for stab_temp in (stabs or []): #ty
+            for stab_temp in stabs or []:  # ty
                 stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}
                 if len(stab_temp_labels & stab_set_label) == 4:
                     labels_weight6 = stab_temp_labels
@@ -1029,8 +1038,8 @@ class SyndromeExtractionStimCC:
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
-            for stab_temp in (stabs or []): #ty
-                stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}#ty
+            for stab_temp in stabs or []:  # ty
+                stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}  # ty
                 if len(stab_temp_labels & stab_set_label) == 4:
                     rec = (
                         next(
@@ -1072,7 +1081,7 @@ class SyndromeExtractionStimCC:
         it compares the stabilizers of the basis in which zpm.p is done.
         these are naturally okay thus only two stabilizers needed
         """
-        stab_labels = {pe.label for pe in (stab.data_qubits or [])}#ty
+        stab_labels = {pe.label for pe in (stab.data_qubits or [])}  # ty
         # find the weight-4 stabilizer of the previous layer
         prism_pipes_zpm_previous = self.prism_pipes_to_ZPM[z - 1]
         prism_pipes_stabs_previous = self.mapping_full[z - 1]
@@ -1080,8 +1089,8 @@ class SyndromeExtractionStimCC:
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
-            for stab_temp in (stabs or []): #ty
-                stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}#ty
+            for stab_temp in stabs or []:  # ty
+                stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}  # ty
                 # overlap 4 guarantees correct stab
                 if len(stab_temp_labels & stab_labels) == 4 and len(stab_temp_labels) == 4:
                     stab_weight4 = stab_temp
@@ -1100,8 +1109,8 @@ class SyndromeExtractionStimCC:
         flag = False
         for prism_pipe in prism_pipes_zpm_temp.keys():
             stabs = prism_pipes_stabs[prism_pipe].stabilizers
-            for stab_temp in (stabs or []): #ty
-                stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}#ty
+            for stab_temp in stabs or []:  # ty
+                stab_temp_labels = {pe.label for pe in (stab_temp.data_qubits or [])}  # ty
                 zpm = prism_pipes_zpm_temp[prism_pipe]
                 # take the weight-2 stabilizer that has overlap with current weight-6
                 # this is guaranteed in the adjacent pipe.
@@ -1167,7 +1176,7 @@ class SyndromeExtractionStimCC:
         """
         # usually, weight-4 stabilizer is given as input
         # find weight-6 stabilizer and weight-2 stabilizer
-        stab_labels = {pe.label for pe in (stab_weight6.data_qubits or set())}#ty
+        stab_labels = {pe.label for pe in (stab_weight6.data_qubits or set())}  # ty
 
         if len(stab_labels) != 6:
             return
@@ -1185,9 +1194,9 @@ class SyndromeExtractionStimCC:
         for prism_pipe in prism_pipes_zpm_temp.keys():
             stabs = prism_pipes_stabs[prism_pipe].stabilizers
             zpm = prism_pipes_zpm_temp[prism_pipe]
-            for stab in (stabs or []): #ty
-                stab_temp_labels = {pe.label for pe in (stab.data_qubits or [])}#ty
-                if stab_temp_labels & stab_labels and len(stab.data_qubits or []) == 2:#ty
+            for stab in stabs or []:  # ty
+                stab_temp_labels = {pe.label for pe in (stab.data_qubits or [])}  # ty
+                if stab_temp_labels & stab_labels and len(stab.data_qubits or []) == 2:  # ty
                     stab_weight2 = stab
                     # meas type is opposite of init
                     if zpm.p == BasisPrism.Z:
@@ -1205,11 +1214,15 @@ class SyndromeExtractionStimCC:
         flag = False
         for prism_pipe in prism_pipes_zpm_previous.keys():
             stabs = prism_pipes_stabs_previous[prism_pipe].stabilizers
-            for stab in (stabs or []):#ty
-                stab_temp_labels = {pe.label for pe in (stab.data_qubits or [])}#ty
+            for stab in stabs or []:  # ty
+                stab_temp_labels = {pe.label for pe in (stab.data_qubits or [])}  # ty
                 if stab_labels == stab_temp_labels | set(
-                    pe.label for pe in (stab_weight2.data_qubits
-                                        if (stab_weight2 and stab_weight2.data_qubits) else [])#ty
+                    pe.label
+                    for pe in (
+                        stab_weight2.data_qubits
+                        if (stab_weight2 and stab_weight2.data_qubits)
+                        else []
+                    )  # ty
                 ):
                     stab_weight4 = stab
                     flag = True
@@ -1332,8 +1345,8 @@ class SyndromeExtractionStimCC:
         meas_rec_lst: list[MeasRecInfo],
         circuit: stim.Circuit,
         z: int,
-        r: int
-        ) -> stim.Circuit:
+        r: int,
+    ) -> stim.Circuit:
         """Create detectors based on data qubit measurements.
 
         i.e. for some stabilizer, take the data qubit measurements of the respective qubits
@@ -1360,7 +1373,7 @@ class SyndromeExtractionStimCC:
             # only take the stabilizers whose data qubits are actually measured.
             detector_idx_lst = []
             flag = False
-            for data in (stab.data_qubits or []):#ty
+            for data in stab.data_qubits or []:  # ty
                 if zpm.m == BasisPrism.Z:
                     try:
                         match = next(
@@ -1484,10 +1497,8 @@ class SyndromeExtractionStimCC:
         return self.qubit_coords_quadratic
 
     def find_reachable_via_horizontal(
-            self,
-            cs: CorrelationSurface,
-            prisms_in_obs: list[Prism]
-            ) -> set[Position3DHex]:
+        self, cs: CorrelationSurface, prisms_in_obs: list[Prism]
+    ) -> set[Position3DHex]:
         """Determine which of the observables (star operator on which patch) receives corrections.
 
         This means that we have parities from measurements at the vertical/horizontal correlation
@@ -1526,7 +1537,7 @@ class SyndromeExtractionStimCC:
         rounds: int,
         z: int,
         prism_pipes_zpm_temp: dict[Prism | PrismPipe, ZPM],
-        prism_pipes_stabs: dict, #too lazy to find detailed type that does not mess around with ty
+        prism_pipes_stabs: dict,  # too lazy to find detailed type that does not mess around with ty
         cnot_order: list[str],
         meas_rec_lst: list[MeasRecInfo],
         p_init: float,
@@ -1979,11 +1990,15 @@ class SyndromeExtractionStimCC:
                                     and self.pipe_matches(m.pipe_prism, prism_pipe)
                                     and m.z_value == z - 1
                                     and m.stabilizer is not None
-                                    and {pe.rect
-                                         for pe in
-                                         (m.stabilizer.data_qubits if
-                                          (m.stabilizer and m.stabilizer.data_qubits)
-                                          else [])} == target_rects #ty
+                                    and {
+                                        pe.rect
+                                        for pe in (
+                                            m.stabilizer.data_qubits
+                                            if (m.stabilizer and m.stabilizer.data_qubits)
+                                            else []
+                                        )
+                                    }
+                                    == target_rects  # ty
                                     and m.round == rounds - 1
                                 ).abs_rec
                                 - 1
@@ -2016,11 +2031,15 @@ class SyndromeExtractionStimCC:
                                     and self.pipe_matches(m.pipe_prism, prism_pipe)
                                     and m.z_value == z - 1
                                     and m.stabilizer is not None
-                                    and {pe.rect
-                                         for pe in
-                                         (m.stabilizer.data_qubits if
-                                          (m.stabilizer and m.stabilizer.data_qubits)
-                                          else [])} == target_rects #ty
+                                    and {
+                                        pe.rect
+                                        for pe in (
+                                            m.stabilizer.data_qubits
+                                            if (m.stabilizer and m.stabilizer.data_qubits)
+                                            else []
+                                        )
+                                    }
+                                    == target_rects  # ty
                                     and m.round == rounds - 1
                                 ).abs_rec
                                 - 1
@@ -2166,7 +2185,7 @@ class SyndromeExtractionStimCC:
         included in the logical observables.
         """
         # ==final measurements==
-        for prism_pipe in prism_pipes_zpm_temp.keys():
+        for prism_pipe in prism_pipes_zpm_temp.keys():  # noqa: PLC0206
             zpm = prism_pipes_zpm_temp[prism_pipe]
             stabs = prism_pipes_stabs[prism_pipe].stabilizers
             data_positions = prism_pipes_stabs[prism_pipe].positions
@@ -2216,7 +2235,7 @@ class SyndromeExtractionStimCC:
                 reachable_via_horizontal = self.find_reachable_via_horizontal(cs, prisms_in_obs)
 
             # ==final round of detectors based on stabilizers based on zpm.m==
-            for prism_pipe in prism_pipes_zpm_temp.keys():
+            for prism_pipe in prism_pipes_zpm_temp.keys():  # noqa: PLC0206
                 zpm = prism_pipes_zpm_temp[prism_pipe]
                 stabs = prism_pipes_stabs[prism_pipe].stabilizers
                 data_positions = prism_pipes_stabs[prism_pipe].positions

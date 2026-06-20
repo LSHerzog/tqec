@@ -439,7 +439,7 @@ class PrismGraph:
         list[list[Position3DHex]],
         dict[PrismPipe, list[list[Position3DHex]]],
         dict[Prism, list[list[Position3DHex]]],
-        ]:
+    ]:
         """Build the stabilizers of a given time slice and given distance d."""
         # filter prism and horizontal pipes of some given time slice
         current_prisms = []

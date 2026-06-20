@@ -1,7 +1,6 @@
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import cm
 from matplotlib.patches import Polygon
 
 from tqec.computation.prism import Position3DHex
@@ -167,7 +166,7 @@ def plot_position_dict(  # noqa: D417
                 )
 
     if star_op is not None:
-        colors = [rainbow(color_idx) for color_idx in range(len(star_op))]#plt.colormaps["tab10"].colors
+        colors = [rainbow(color_idx) for color_idx in range(len(star_op))]
         for k, op in enumerate(star_op):
             xs = [p.to_euclidean()[0] for p in op]
             ys = [p.to_euclidean()[1] for p in op]
