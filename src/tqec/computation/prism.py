@@ -23,8 +23,8 @@ class Position3DHex:
     z: int
 
     def __str__(self) -> str:
-            """Return a clean tuple string representation."""
-            return f"({self.x}, {self.y}, {self.z})"
+        """Return a clean tuple string representation."""
+        return f"({self.x}, {self.y}, {self.z})"
 
     def as_tuple(self) -> tuple[int, int, int]:
         """Return coordinates as (x, y, z) tuple."""

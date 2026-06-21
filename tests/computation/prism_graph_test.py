@@ -13,6 +13,7 @@ from tqec.utils.exceptions import TQECError
 # Simple Fake Classes to avoid using unittest.mock
 # ==============================================================================
 
+
 class FakeZXGraph:
     def __init__(self, positions: dict[int, Position3DHex]):  # noqa: D107
         self._positions = positions
@@ -60,8 +61,7 @@ def test_prism_graph_add_prism() -> None:
 
     pos_dup_port = Position3DHex(2, 2, 0)
     with pytest.raises(
-        TQECError,
-        match="There is already a port with the same label In in the graph\\."
+        TQECError, match="There is already a port with the same label In in the graph\\."
     ):
         g.add_prism(pos_dup_port, "PORT", label="In")
 
@@ -138,6 +138,7 @@ def test_find_ver_hor_correlation_surface() -> None:
     assert basis_res == BasisPrism.X
     assert orientation_res == "ver"
 
+
 def test_stabilizers_and_product() -> None:
     """Test everything by running an explicit example against a saved snapshot."""
     # Build up the active graph
@@ -151,13 +152,10 @@ def test_stabilizers_and_product() -> None:
         (Position3DHex(2, 2, 0), "ZZ", ""),
         (Position3DHex(1, 3, 0), "NN", ""),
         (Position3DHex(4, 0, 0), "NN", ""),
-
         (Position3DHex(0, 0, -1), "XN", ""),
         (Position3DHex(0, 0, 1), "NX", ""),
-
         (Position3DHex(4, 0, -1), "XN", ""),
         (Position3DHex(4, 0, 1), "NX", ""),
-
         (Position3DHex(1, 3, -1), "XN", ""),
         (Position3DHex(1, 3, 1), "NX", ""),
     ]

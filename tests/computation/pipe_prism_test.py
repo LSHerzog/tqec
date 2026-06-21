@@ -16,6 +16,7 @@ def test_prism_pipe_kind() -> None:
     assert kind_temporal.is_temporal
     assert not kind_temporal.is_spatial
 
+
 def test_prism_pipe_from_prisms_validation() -> None:
     # Using your explicit valid hex neighbor setup
     u_base = Prism(Position3DHex(0, 0, 0), ZXPrism.from_str("XX"))
@@ -31,13 +32,10 @@ def test_prism_pipe_from_prisms_validation() -> None:
         PrismPipe.from_prisms(u_base, far_prism, PrismPipeKind(BasisPrism.X, BasisPrism.Z))
 
     with pytest.raises(
-            ValueError,
-            match="the pipe must be temporal,i\\.e\\. is allowed to differ only in pos\\.Z"
-        ):
-            PrismPipe.from_prisms(u_base,
-                                  v_spatial_neighbor,
-                                  PrismPipeKind(BasisPrism.N, BasisPrism.N)
-                                  )
+        ValueError, match="the pipe must be temporal,i\\.e\\. is allowed to differ only in pos\\.Z"
+    ):
+        PrismPipe.from_prisms(u_base, v_spatial_neighbor, PrismPipeKind(BasisPrism.N, BasisPrism.N))
+
 
 def test_prism_pipe_basis_matching() -> None:
     u_mismatch = Prism(Position3DHex(0, 0, 0), ZXPrism.from_str("ZX"))
@@ -52,22 +50,18 @@ def test_prism_pipe_basis_matching() -> None:
     temporal_kind = PrismPipeKind(BasisPrism.N, BasisPrism.N)
 
     with pytest.raises(
-            ValueError,
-            match="The meas face that touches the temporal pipe must be N\\."
-        ):
-            PrismPipe.from_prisms(u_temporal_invalid, v_temporal_valid, temporal_kind)
+        ValueError, match="The meas face that touches the temporal pipe must be N\\."
+    ):
+        PrismPipe.from_prisms(u_temporal_invalid, v_temporal_valid, temporal_kind)
 
     u_base = Prism(Position3DHex(0, 0, 0), ZXPrism.from_str("XX"))
     v_spatial_neighbor = Prism(Position3DHex(1, 1, 0), ZXPrism.from_str("XX"))
     with pytest.raises(
-        ValueError,
-            match="A spatial pipe must have different basis walls\\. You got hor=X, ver=X"
-        ):
-            PrismPipe.from_prisms(
-                u_base,
-                v_spatial_neighbor,
-                PrismPipeKind(hor=BasisPrism.X, ver=BasisPrism.X)
-            )
+        ValueError, match="A spatial pipe must have different basis walls\\. You got hor=X, ver=X"
+    ):
+        PrismPipe.from_prisms(
+            u_base, v_spatial_neighbor, PrismPipeKind(hor=BasisPrism.X, ver=BasisPrism.X)
+        )
 
 
 def test_valid_prism_pipe_instantiation() -> None:

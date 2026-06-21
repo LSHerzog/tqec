@@ -69,12 +69,8 @@ def test_get_zpm_for_stab_in_both_x_and_z_searches_prisms(two_patch_setup):
     dq_p1, _, data_temp, zpm_temp, zpm_p1, _ = two_patch_setup
     stab = tuple(dq_p1)
     result = SyndromeExtractionStimCC.get_zpm_for_stab(
-        stab,
-        data_temp,
-        zpm_temp,
-        stabs_x=[stab],
-        stabs_z=[stab]
-        )
+        stab, data_temp, zpm_temp, stabs_x=[stab], stabs_z=[stab]
+    )
     assert result == zpm_p1
 
 
@@ -82,12 +78,8 @@ def test_get_zpm_for_stab_only_in_x_searches_pipes(two_patch_setup):
     _, dq_pipe, data_temp, zpm_temp, _, zpm_pipe = two_patch_setup
     stab = tuple(dq_pipe)
     result = SyndromeExtractionStimCC.get_zpm_for_stab(
-        stab,
-        data_temp,
-        zpm_temp,
-        stabs_x=[stab],
-        stabs_z=[]
-        )
+        stab, data_temp, zpm_temp, stabs_x=[stab], stabs_z=[]
+    )
     assert result == zpm_pipe
 
 
@@ -95,12 +87,8 @@ def test_get_zpm_for_stab_no_overlap_returns_none(two_patch_setup):
     _, _, data_temp, zpm_temp, _, _ = two_patch_setup
     stab = (Position3DHex(99, 99, 0),)
     result = SyndromeExtractionStimCC.get_zpm_for_stab(
-        stab,
-        data_temp,
-        zpm_temp,
-        stabs_x=[],
-        stabs_z=[]
-        )
+        stab, data_temp, zpm_temp, stabs_x=[], stabs_z=[]
+    )
     assert result is None
 
 
@@ -108,12 +96,8 @@ def test_get_zpm_for_stab_partial_overlap_is_sufficient(two_patch_setup):
     _, dq_pipe, data_temp, zpm_temp, _, zpm_pipe = two_patch_setup
     stab = (dq_pipe[0], Position3DHex(50, 50, 0))
     result = SyndromeExtractionStimCC.get_zpm_for_stab(
-        stab,
-        data_temp,
-        zpm_temp,
-        stabs_x=[],
-        stabs_z=[]
-        )
+        stab, data_temp, zpm_temp, stabs_x=[], stabs_z=[]
+    )
     assert result == zpm_pipe
 
 
@@ -174,6 +158,7 @@ def test_append_tick_with_idle_noise_no_noise_when_all_active():
     )
     assert [instr.name for instr in circuit] == ["TICK"]
 
+
 def test_get_active_qubits_since_last_tick_collects_targets_after_tick():
     circuit = stim.Circuit()
     circuit.append("H", [5])
@@ -195,10 +180,8 @@ def _prism(x, y, z, kind="ZZ"):
 
 def _pipe(ux, uy, uz, vx, vy, vz):
     return PrismPipe(
-        _prism(ux, uy, uz),
-        _prism(vx, vy, vz),
-        PrismPipeKind(hor=BasisPrism.X, ver=BasisPrism.Z)
-        )
+        _prism(ux, uy, uz), _prism(vx, vy, vz), PrismPipeKind(hor=BasisPrism.X, ver=BasisPrism.Z)
+    )
 
 
 def test_pipe_matches_prisms_ignore_z_and_kind(se):
@@ -219,8 +202,14 @@ def test_pipe_matches_prism_vs_pipe_never_matches(se):
 
 def _meas_rec(z_value, stabilizer, round_, label=0):
     return MeasRecInfo(
-        meas_type="data_mz", pipe_prism=None, stabilizer=stabilizer,
-        abs_rec=0, z_value=z_value, round=round_, label=label, tick=0,
+        meas_type="data_mz",
+        pipe_prism=None,
+        stabilizer=stabilizer,
+        abs_rec=0,
+        z_value=z_value,
+        round=round_,
+        label=label,
+        tick=0,
     )
 
 
