@@ -144,6 +144,10 @@ class PrismPipe:
         elif hor is BasisPrism.Z and ver is BasisPrism.X:
             if u.position.z != v.position.z:
                 raise ValueError("hor=Z and ver=X must be a spatial pipe.")
+        if hor is not BasisPrism.N and hor == ver:
+            raise ValueError(
+                f"A spatial pipe must have different basis walls. You got hor={hor}, ver={ver}"
+            )
 
         # make sure that the pipe colors fit the meas/prep colors of the prisms
         if kind.is_spatial:
@@ -163,10 +167,10 @@ class PrismPipe:
             # thus these faces should be N
             if isinstance(u.kind, ZXPrism):
                 if u.kind.meas != BasisPrism.N:
-                    raise ValueError("The prep face that touches the temporal pipe must be N.")
+                    raise ValueError("The meas face that touches the temporal pipe must be N.")
             if isinstance(v.kind, ZXPrism):
                 if v.kind.prep != BasisPrism.N:
-                    raise ValueError("The meas face touching the temporal pipe must be N.")
+                    raise ValueError("The prep face touching the temporal pipe must be N.")
 
         pipe_kind = PrismPipeKind(hor=hor, ver=ver)
         return PrismPipe(u, v, pipe_kind)
