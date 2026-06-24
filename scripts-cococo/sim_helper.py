@@ -158,6 +158,7 @@ def run_and_plot(
 
         ax.loglog()
         ax.legend(loc="center right", bbox_to_anchor=(1.0, 0.62))
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
         ax.set_xlabel("Physical Error Rate")
         ax.set_ylabel("Logical Error Rate")
         ax.xaxis.set_major_locator(plt.LogLocator(base=10, numticks=10))
