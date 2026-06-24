@@ -3,7 +3,9 @@
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import sinter
+import numpy as np
 
 import tqec.computation.syndrome_extraction_cc as se
 from tqec import NoiseModel
@@ -12,6 +14,27 @@ from tqec.computation.prism_graph import PrismGraph
 from tqec.simulation.plotting.inset import plot_observable_as_inset
 from tqec.simulation.simulation import start_simulation_using_sinter
 from tqec.simulation.split import split_stats_for_observables
+
+from collections import defaultdict
+import json
+
+def keep_one_run(stats):
+    """
+    Keep only the stats with the higher shot count per (d, p).
+    
+    This is only necessary because in my scripts I accidentally created a mismatch
+    between float and integers for d values in the surface code run. Thus
+    I did run more simulations than necessary. For future runs: Remove this function
+    call in `run_and_plot` and make sure that the values are ensured to be int.
+    Otherwise restarting a stopped run will cause this mismatch and create more
+    data than necessary.
+    """
+    best = {}
+    for s in stats:
+        key = (s.json_metadata["d"], s.json_metadata["p"])
+        if key not in best or s.shots > best[key].shots:
+            best[key] = s
+    return list(best.values())
 
 
 def run_and_plot(
@@ -89,9 +112,14 @@ def run_and_plot(
 
     # reload from CSV (always, so plots are consistent whether we just ran or are reloading)
     stats_cc = sinter.read_stats_from_csv_files(path_cc)
-    stats_sc = sinter.read_stats_from_csv_files(path_sc)
+    stats_sc = keep_one_run(sinter.read_stats_from_csv_files(path_sc))
 
+    print("-----------SC------------")
     for s in stats_sc:
+        print(s.json_metadata, "shots:", s.shots, "errors:", s.errors, "discards:", s.discards)
+
+    print("-----------CC------------")
+    for s in stats_cc:
         print(s.json_metadata, "shots:", s.shots, "errors:", s.errors, "discards:", s.discards)
 
     split_cc = split_stats_for_observables(stats_cc, num_observables=n_obs)
@@ -100,20 +128,30 @@ def run_and_plot(
     for obs_idx in range(n_obs):
         fig, ax = plt.subplots()
 
+        d_values = sorted(set(int(s.json_metadata["d"]) for s in split_sc[obs_idx] + split_cc[obs_idx]))
+        colors = cm.rainbow(np.linspace(0, 1, len(d_values)+3)) #+3 because colors not nice otherwise
+        color_map = {d: c for d, c in zip(d_values, colors)}
+
         sinter.plot_error_rate(
             ax=ax,
             stats=split_sc[obs_idx],
             x_func=lambda s: s.json_metadata["p"],
             group_func=lambda s: f"Surface Code d={int(s.json_metadata['d'])}",
-            plot_args_func=lambda *_: {"linestyle": ":"},
+            plot_args_func=lambda index, group_key, group_stats: {
+                "linestyle": ":",
+                "color": color_map[int(group_key.split("=")[1])],
+            },
         )
 
         sinter.plot_error_rate(
             ax=ax,
             stats=split_cc[obs_idx],
             x_func=lambda s: s.json_metadata["p"],
-            group_func=lambda s: f"Color Code d={s.json_metadata['d']}",
-            plot_args_func=lambda *_: {"linestyle": "-"},
+            group_func=lambda s: f"Color Code d={int(s.json_metadata['d'])}",
+            plot_args_func=lambda index, group_key, group_stats: {
+                "linestyle": "-",
+                "color": color_map[int(group_key.split("=")[1])],
+            },
         )
 
         plot_observable_as_inset(ax, zx_cc, cs_cc_lst[obs_idx])

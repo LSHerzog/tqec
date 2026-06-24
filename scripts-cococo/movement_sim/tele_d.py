@@ -88,12 +88,17 @@ for cs_idx, cs_sc in enumerate(cs_sc_lst):
 
 
 timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+timestamp = "260619_164507"
 
 if __name__ == "__main__":
     zx = g.to_zx_graph()
 
     d_lst = [3, 5, 7]
-    ks = [(d - 1) / 2 for d in d_lst]
+    # in my runs we accidently run more than necessary because this was float
+    # and caused a mismatch in the stored data after loading
+    # fixing it to int for future runs should fix that and make "keep_one_run"
+    # in sim_helper obsolete.
+    ks = [int((d - 1) / 2) for d in d_lst]
     circuit_builders = [se.SyndromeExtractionStimCC(g, d=d) for d in d_lst]
 
     add_missing_detectors = False
@@ -122,5 +127,5 @@ if __name__ == "__main__":
         tele_type=tele_type,
         timestamp=timestamp,
         correlated_decoder=correlated_matching_helper.CorrelatedPyMatchingDecoder(),
-        run_simulation=True,  # set False to only reload and replot
+        run_simulation=False,  # set False to only reload and replot
     )

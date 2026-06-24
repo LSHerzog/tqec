@@ -91,6 +91,7 @@ for cs_idx, cs_sc in enumerate(cs_sc_lst):
 
 
 timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+timestamp = "260619_164245"
 
 if __name__ == "__main__":
     zx = g.to_zx_graph()
@@ -125,5 +126,5 @@ if __name__ == "__main__":
         tele_type=tele_type,
         timestamp=timestamp,
         correlated_decoder=correlated_matching_helper.CorrelatedPyMatchingDecoder(),
-        run_simulation=True,  # set False to only reload and replot
+        run_simulation=False,  # set False to only reload and replot
     )
