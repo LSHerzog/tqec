@@ -77,7 +77,7 @@ def prism_kind_to_zx(  # noqa: PLR0911
             ):
                 raise TQECError(
                     "Cannot determine ZX type of isolated prism with mismatched "
-                    "preparation and measurement bases."
+                    "preparation and measurement bases. No deterministic CS possible."
                 )
 
             if kind.prep is BasisPrism.X or kind.meas is BasisPrism.X:
@@ -101,6 +101,18 @@ def prism_kind_to_zx(  # noqa: PLR0911
                 return VertexType.Z, 0
             if (
                 kind.meas is BasisPrism.Z or kind.prep is BasisPrism.Z
+            ):  # other possibilities already ruled out in construction of PipeGraph
+                return VertexType.X, 0
+            else:
+                return VertexType.BOUNDARY, 0
+        elif len(neighbor_pipes_spatial) == 1 and len(neighbor_pipes_temporal) == 0:
+            #spatial end of the diagram, depends on meas basis!
+            if (
+                kind.meas is BasisPrism.X
+            ):  # other possibilities already ruled out in construction of PipeGraph
+                return VertexType.Z, 0
+            if (
+                kind.meas is BasisPrism.Z
             ):  # other possibilities already ruled out in construction of PipeGraph
                 return VertexType.X, 0
             else:

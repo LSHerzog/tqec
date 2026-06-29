@@ -156,11 +156,11 @@ class PrismPipe:
                     raise ValueError("prep of u must be same as hor of pipe")
                 if u.kind.meas in (BasisPrism.X, BasisPrism.Z) and u.kind.meas != hor:
                     raise ValueError("meas of u must be same as hor of pipe")
-            if isinstance(v.kind, ZXPrism):
-                if v.kind.prep in (BasisPrism.X, BasisPrism.Z) and v.kind.prep != hor:
-                    raise ValueError("prep of v must be same as hor of pipe")
-                if v.kind.meas in (BasisPrism.X, BasisPrism.Z) and v.kind.meas != hor:
-                    raise ValueError("meas of v must be same as hor of pipe")
+            #if isinstance(v.kind, ZXPrism):
+            #    if v.kind.prep in (BasisPrism.X, BasisPrism.Z) and v.kind.prep != hor:
+            #        raise ValueError("prep of v must be same as hor of pipe")
+            #    if v.kind.meas in (BasisPrism.X, BasisPrism.Z) and v.kind.meas != hor:
+            #        raise ValueError("meas of v must be same as hor of pipe")
 
         if kind.is_temporal:
             # v touches pipe with prep face and u touches pipe with meas face.

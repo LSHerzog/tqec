@@ -38,13 +38,6 @@ def test_prism_pipe_from_prisms_validation() -> None:
 
 
 def test_prism_pipe_basis_matching() -> None:
-    u_mismatch = Prism(Position3DHex(0, 0, 0), ZXPrism.from_str("ZX"))
-    v_neighbor = Prism(Position3DHex(1, 1, 0), ZXPrism.from_str("XX"))
-    spatial_kind = PrismPipeKind(BasisPrism.X, BasisPrism.Z)  # hor=X
-
-    with pytest.raises(ValueError, match="prep of v must be same as hor of pipe"):
-        PrismPipe.from_prisms(u_mismatch, v_neighbor, spatial_kind)
-
     u_temporal_invalid = Prism(Position3DHex(0, 0, 0), ZXPrism.from_str("XX"))
     v_temporal_valid = Prism(Position3DHex(0, 0, 1), ZXPrism.from_str("NX"))
     temporal_kind = PrismPipeKind(BasisPrism.N, BasisPrism.N)

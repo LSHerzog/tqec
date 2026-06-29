@@ -732,29 +732,42 @@ class PrismGraph:
         return assignment
 
     def find_all_linear_paths_timeslice(self, z: int) -> list[list[Position3DHex]]:
-        """Find all simple linear paths through the prism graph restricted to a fixed z slice."""
+        """Find all simple linear paths through the prism graph restricted to a fixed z slice.
+
+        connecting each endpoint to every other node in the slice.
+
+        Important: This will be very costly for large diagrams. For large diagrams
+        we must construct only those paths we actually need.
+        """
         # Restrict to nodes in the given z-slice
         nodes_in_slice = [n for n in self._graph.nodes() if n.z == z]
         subgraph = self._graph.subgraph(nodes_in_slice)
 
-        # Find endpoints in the subgraph
+        # Find endpoints in the subgraph (degree == 1)
         endpoints = [n for n, deg in subgraph.degree() if deg == 1]
 
         # If no endpoints exist (e.g. pure cycle), fall back to all nodes in slice
         if not endpoints:
             endpoints = list(subgraph.nodes())
 
+        seen: set[tuple[Position3DHex, ...]] = set()
         all_paths: list[list[Position3DHex]] = []
 
         for source in endpoints:
-            for target in endpoints:
-                if source >= target:
+            # Change target from `endpoints` to all nodes in the layer subgraph
+            for target in subgraph.nodes():
+                if source == target:
                     continue
                 for node_path in nx.all_simple_paths(subgraph, source, target):
-                    all_paths.append(node_path)
-                    break  # only one path needed
+                    key = tuple(node_path)
+                    reverse_key = key[::-1]
+                    if key not in seen and reverse_key not in seen:
+                        seen.add(key)
+                        all_paths.append(node_path)
+                    break  # only one simple path needed per source-target pair
 
         return all_paths
+
 
     @staticmethod
     def find_boundary_stabilizers(
@@ -1182,7 +1195,8 @@ class PrismGraph:
             start_single_type_stabs = [
                 stab
                 for pipe, stabs in dct_single_type_stabs.items()
-                if pipe.u.position == start_point or pipe.v.position == start_point  # noqa: PLR1714
+                #if pipe.u.position == start_point or pipe.v.position == start_point  # noqa: PLR1714
+                if {pipe.u.position, pipe.v.position} == {start_point, path[1]}
                 for stab in stabs
             ]
 
@@ -1195,7 +1209,8 @@ class PrismGraph:
             end_single_type_stabs = [
                 stab
                 for pipe, stabs in dct_single_type_stabs.items()
-                if pipe.u.position == end_point or pipe.v.position == end_point  # noqa: PLR1714
+                #if pipe.u.position == end_point or pipe.v.position == end_point  # noqa: PLR1714
+                if {pipe.u.position, pipe.v.position} == {end_point, path[-2]}
                 for stab in stabs
             ]
 
@@ -1269,14 +1284,14 @@ class PrismGraph:
             weight6_in_product = [
                 stab
                 for stab in stabilizer_product
-                if len(stab) == 6 and not (set(stab) & star_set_full)
+                if len(stab) == 6
             ]
             for stab in weight6_in_product:
                 once_touched = [
                     qubit
                     for qubit in stab
                     if self.count_stabilizer_appearances(qubit, stabilizer_product) == 1
-                    and qubit not in (start_star, end_star)
+                    and qubit not in star_set_full
                 ]
                 if len(once_touched) == 2 and once_touched[0].is_neighbour(once_touched[1]):
                     stabilizer_product.append(once_touched)
